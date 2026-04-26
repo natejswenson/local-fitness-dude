@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily Garmin pull + briefing.
+  Fires at 06:30 local. If the Mac is asleep at that time, launchd will run
+  this on next wake (StartCalendarInterval semantics). The `fitness brief`
+  command is itself catch-up safe — it pulls "since last successful date"
+  not "yesterday only".
+
+  Install:  ./ops/install-launchd.sh
+  Inspect:  launchctl list | grep local-fitness
+  Trigger:  launchctl kickstart -k gui/$(id -u)/com.local-fitness.daily
+  Logs:     ~/localrepo/local-fitness/logs/{daily.out.log,daily.err.log}
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local-fitness.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/natejswenson/localrepo/local-fitness/.venv/bin/fitness</string>
+        <string>brief</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/natejswenson/localrepo/local-fitness</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/natejswenson/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/natejswenson</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/natejswenson/localrepo/local-fitness/logs/daily.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/natejswenson/localrepo/local-fitness/logs/daily.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>
