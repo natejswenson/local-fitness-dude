@@ -190,7 +190,13 @@ def config_get(key: str | None):
 
 @main.command()
 @click.option("--port", default=8765, help="Port to bind (default 8765)")
-@click.option("--host", default="127.0.0.1", help="Host to bind (default 127.0.0.1, localhost-only)")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    envvar="LOCAL_FITNESS_HOST",
+    help="Host to bind (default 127.0.0.1, localhost-only). "
+         "Set LOCAL_FITNESS_HOST=0.0.0.0 in the container to expose on the Docker network.",
+)
 @click.option("--reload", is_flag=True, help="Reload on code changes (dev mode)")
 @click.option("--open", "open_browser", is_flag=True, help="Open browser on start")
 def serve(port: int, host: str, reload: bool, open_browser: bool):
