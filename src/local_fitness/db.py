@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from datetime import date as date_cls, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -163,15 +164,55 @@ def init_schema(db_path: Path | None = None) -> None:
         conn.executescript(SCHEMA)
 
 
-def last_successful_daily_date(db_path: Path | None = None) -> str | None:
-    """Latest date for which the `daily` ingest run succeeded."""
+def last_known_daily_date(db_path: Path | None = None) -> str | None:
+    """Most recent date with any wellness row in `daily_metrics`.
+
+    Used as the resume point for live pulls — honest about what data we
+    actually hold, regardless of whether it came from a backfill ZIP or a
+    daily pull. The previous query (status='success' AND source='daily')
+    was blind to backfill rows, causing the first live pull after a
+    backfill to re-fetch 5 years.
+    """
     with connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT MAX(last_date_fetched) AS d "
-            "FROM ingest_runs "
-            "WHERE status = 'success' AND source = 'daily'"
-        ).fetchone()
+        row = conn.execute("SELECT MAX(date) AS d FROM daily_metrics").fetchone()
     return row["d"] if row and row["d"] else None
+
+
+def missing_daily_dates(
+    start: date_cls, end: date_cls, db_path: Path | None = None
+) -> list[date_cls]:
+    """Dates in [start, end] (inclusive) that have no row in daily_metrics."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT date FROM daily_metrics WHERE date >= ? AND date <= ?",
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+    present = {r["date"] for r in rows}
+    out: list[date_cls] = []
+    d = start
+    while d <= end:
+        if d.isoformat() not in present:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def mark_orphaned_runs(db_path: Path | None = None) -> int:
+    """Close out any in_progress runs from prior crashed/killed processes.
+
+    Called at server startup. Any `in_progress` row at boot must be
+    orphaned — no Python process is running it. Returns the row count.
+    """
+    now = datetime.now().isoformat()
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE ingest_runs "
+            "SET completed_at = ?, status = 'orphaned', "
+            "    error_message = 'Process exited before run completed' "
+            "WHERE completed_at IS NULL AND status = 'in_progress'",
+            (now,),
+        )
+        return cur.rowcount
 
 
 def get_setting(key: str, default: str | None = None, db_path: Path | None = None) -> str | None:

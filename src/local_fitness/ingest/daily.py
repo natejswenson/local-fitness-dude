@@ -245,7 +245,7 @@ def pull(
     if force_from:
         start = force_from
     else:
-        last = db.last_successful_daily_date()
+        last = db.last_known_daily_date()
         start = (date.fromisoformat(last) + timedelta(days=1)) if last else EARLIEST_BACKFILL_DATE
 
     truncated_from: date | None = None
@@ -283,6 +283,7 @@ def pull(
     error = None
     days = 0
     activities_loaded = 0
+    status: str | None = None
 
     try:
         client = _client()
@@ -316,19 +317,29 @@ def pull(
         status = "partial" if last_ok else "failure"
         error = str(e)
         LOG.exception("Pull failed at %s", last_ok or start)
-
-    with db.connect() as conn:
-        conn.execute(
-            "UPDATE ingest_runs SET completed_at = ?, status = ?, last_date_fetched = ?, "
-            "error_message = ? WHERE run_id = ?",
-            (
-                datetime.now().isoformat(),
-                status,
-                last_ok.isoformat() if last_ok else None,
-                error,
-                run_id,
-            ),
-        )
+    finally:
+        # The closing UPDATE has to land on every exit path, including
+        # KeyboardInterrupt / SystemExit / hard SIGTERM that bypasses
+        # the `except Exception` clause. Otherwise we leak `in_progress`
+        # rows that confuse the SyncIndicator on next boot.
+        if status is None:
+            status = "interrupted"
+            error = error or "Pull was interrupted before completion"
+        try:
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE ingest_runs SET completed_at = ?, status = ?, "
+                    "last_date_fetched = ?, error_message = ? WHERE run_id = ?",
+                    (
+                        datetime.now().isoformat(),
+                        status,
+                        last_ok.isoformat() if last_ok else None,
+                        error,
+                        run_id,
+                    ),
+                )
+        except Exception:
+            LOG.exception("Failed to close ingest_runs row %s", run_id)
 
     return {
         "days_pulled": days,
