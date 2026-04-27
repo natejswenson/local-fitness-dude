@@ -89,6 +89,12 @@ def _options(model: str) -> ClaudeAgentOptions:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
+    # Any `in_progress` row at boot must be from a prior crashed/killed
+    # process — mark them so the SyncIndicator can surface "Sync interrupted"
+    # rather than silently rendering nothing.
+    orphaned = db.mark_orphaned_runs()
+    if orphaned:
+        LOG.info("Marked %d orphaned ingest_runs row(s) at startup", orphaned)
     yield
     # Tear down any live chat sessions on shutdown
     async with _session_lock:
@@ -321,6 +327,19 @@ def _sync_state_dict() -> dict:
                 seconds_until_eligible = int((eligible - datetime.now()).total_seconds())
         except ValueError:
             pass
+
+    # Data freshness is the truth the UI cares about: "what's the most
+    # recent day we have wellness data for?" — independent of whether a
+    # particular run succeeded.
+    data_through = db.last_known_daily_date()
+    days_behind = 0
+    if data_through:
+        try:
+            dt = date.fromisoformat(data_through)
+            days_behind = max(0, (date.today() - dt).days)
+        except ValueError:
+            pass
+
     return {
         "is_running": _sync_running,
         "started_at": _sync_started_at.isoformat() if _sync_started_at else None,
@@ -332,6 +351,8 @@ def _sync_state_dict() -> dict:
         "next_eligible_at": next_eligible_at,
         "seconds_until_eligible": seconds_until_eligible,
         "max_days_per_pull": SYNC_MAX_DAYS,
+        "data_through_date": data_through,
+        "days_behind": days_behind,
     }
 
 

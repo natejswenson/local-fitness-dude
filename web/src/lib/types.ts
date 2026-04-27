@@ -101,7 +101,17 @@ export type BriefResponse = {
 
 // ---- Sync ----
 
-export type SyncStatus = 'success' | 'skipped' | 'partial' | 'failure' | 'auth_failure' | 'not_configured' | 'in_progress' | null
+export type SyncStatus =
+  | 'success'
+  | 'skipped'
+  | 'partial'
+  | 'failure'
+  | 'auth_failure'
+  | 'not_configured'
+  | 'in_progress'
+  | 'orphaned'
+  | 'interrupted'
+  | null
 
 export type SyncState = {
   is_running: boolean
@@ -114,6 +124,8 @@ export type SyncState = {
   next_eligible_at: string | null
   seconds_until_eligible: number
   max_days_per_pull: number
+  data_through_date: string | null
+  days_behind: number
 }
 
 export type SyncTriggerResponse = {
