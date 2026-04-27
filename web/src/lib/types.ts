@@ -69,3 +69,32 @@ export type ChatEvent =
   | { type: 'thinking'; text: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
+
+// ---- Brief (structured Takeaways) ----
+
+export type TakeawayTone = 'positive' | 'caution' | 'critical' | 'neutral'
+
+export type TakeawayMetricRef = {
+  metric: string
+  days: number
+}
+
+export type Takeaway = {
+  headline: string
+  summary: string
+  tone: TakeawayTone
+  metric: TakeawayMetricRef | null
+  details: string
+}
+
+export type Brief = {
+  date: string
+  user_name: string
+  takeaways: Takeaway[]
+}
+
+export type BriefResponse = {
+  date: string
+  brief: Brief | null
+  cached: boolean
+}

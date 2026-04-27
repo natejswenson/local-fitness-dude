@@ -1,4 +1,6 @@
-import type { ChatEvent, MetricSeries, TodayResponse, TrainingLoadSeries, Workout } from './types'
+import type {
+  BriefResponse, ChatEvent, MetricSeries, TodayResponse, TrainingLoadSeries, Workout,
+} from './types'
 
 async function getJson<T>(url: string): Promise<T> {
   const r = await fetch(url)
@@ -19,10 +21,7 @@ export const api = {
     if (opts.limit) p.set('limit', String(opts.limit))
     return getJson<{ workouts: Workout[] }>(`/api/workouts?${p}`)
   },
-  brief: (regenerate = false) =>
-    getJson<{ date: string; markdown: string | null; cached: boolean }>(
-      `/api/brief?regenerate=${regenerate}`,
-    ),
+  brief: () => getJson<BriefResponse>('/api/brief'),
   briefGenerate: async (model: string) => {
     const r = await fetch('/api/brief/generate', {
       method: 'POST',
@@ -30,7 +29,7 @@ export const api = {
       body: JSON.stringify({ model }),
     })
     if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
-    return r.json() as Promise<{ date: string; markdown: string }>
+    return r.json() as Promise<BriefResponse>
   },
   chatEnd: (sessionId: string) =>
     fetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),

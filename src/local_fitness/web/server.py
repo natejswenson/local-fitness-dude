@@ -253,12 +253,12 @@ async def api_workout(activity_id: int) -> dict:
 # ---------------------------------------------------------------- API: brief --
 
 @app.get("/api/brief")
-async def api_brief(regenerate: bool = False) -> dict:
-    today = date.today().isoformat()
-    path = BRIEFINGS_DIR / f"{today}.md"
-    if path.exists() and not regenerate:
-        return {"date": today, "markdown": path.read_text(encoding="utf-8"), "cached": True}
-    return {"date": today, "markdown": None, "cached": False}
+async def api_brief() -> dict:
+    """Return today's structured Brief if cached, else null."""
+    brief = briefing_mod.load_today()
+    if brief:
+        return {"date": brief.date, "brief": brief.model_dump(), "cached": True}
+    return {"date": date.today().isoformat(), "brief": None, "cached": False}
 
 
 class BriefGenerateRequest(BaseModel):
@@ -267,8 +267,14 @@ class BriefGenerateRequest(BaseModel):
 
 @app.post("/api/brief/generate")
 async def api_brief_generate(req: BriefGenerateRequest) -> dict:
-    path = await asyncio.to_thread(briefing_mod.generate_and_save, model=req.model)
-    return {"date": date.today().isoformat(), "markdown": path.read_text(encoding="utf-8"), "cached": False}
+    """Force-regenerate today's brief and return the structured object."""
+    await asyncio.to_thread(briefing_mod.generate_and_save, model=req.model)
+    brief = briefing_mod.load_today()
+    return {
+        "date": date.today().isoformat(),
+        "brief": brief.model_dump() if brief else None,
+        "cached": False,
+    }
 
 
 # ---------------------------------------------------------------- API: chat --

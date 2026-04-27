@@ -1,29 +1,25 @@
 import { useEffect, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { TodayResponse, Workout } from '@/lib/types'
-import { Card, CardBody, CardTitle } from './Card'
+import type { Brief, Workout } from '@/lib/types'
+import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
-import { StatCard } from './StatCard'
-import { deltaText, fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
+import { TakeawayCard } from './TakeawayCard'
+import { fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
 
 export function Today() {
-  const [data, setData] = useState<TodayResponse | null>(null)
+  const [brief, setBrief] = useState<Brief | null>(null)
   const [workouts, setWorkouts] = useState<Workout[] | null>(null)
-  const [brief, setBrief] = useState<string | null>(null)
   const [briefLoading, setBriefLoading] = useState(false)
   const [showWorkouts, setShowWorkouts] = useState(false)
   const [userName, setUserName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([api.today(), api.workouts({ days: 30, limit: 8 }), api.brief(), api.config()])
-      .then(([t, w, b, c]) => {
-        setData(t)
+    Promise.all([api.brief(), api.workouts({ days: 30, limit: 8 }), api.config()])
+      .then(([b, w, c]) => {
+        setBrief(b.brief)
         setWorkouts(w.workouts)
-        setBrief(b.markdown)
         setUserName(c.user_name)
       })
       .catch((e) => setError(String(e)))
@@ -32,8 +28,8 @@ export function Today() {
   async function regenerateBrief() {
     setBriefLoading(true)
     try {
-      const b = await api.briefGenerate('claude-sonnet-4-6')
-      setBrief(b.markdown)
+      const r = await api.briefGenerate('claude-sonnet-4-6')
+      setBrief(r.brief)
     } catch (e) {
       setError(String(e))
     } finally {
@@ -42,115 +38,59 @@ export function Today() {
   }
 
   if (error) return <div className="p-6 text-bad">{error}</div>
-  if (!data) return <Loading />
 
-  const today = new Date(data.today + 'T00:00:00')
+  const today = new Date()
   const greeting = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-
-  const recent = [...data.recent_14d].reverse()
-  const bbSpark = recent.filter((d) => d.body_battery_max != null).map((d) => ({ date: d.date, value: d.body_battery_max! }))
-  const rhrSpark = recent.filter((d) => d.rhr != null).map((d) => ({ date: d.date, value: d.rhr! }))
-  const sleepSpark = recent.filter((d) => d.sleep_seconds != null).map((d) => ({ date: d.date, value: d.sleep_seconds! / 3600 }))
-
-  const latest = data.latest
-  const baseline = data.baseline
-  const bbDelta = deltaText(latest?.body_battery_max ?? null, baseline?.body_battery_max_60day_mean ?? null)
-  const rhrDelta = deltaText(latest?.rhr ?? null, baseline?.rhr_60day_mean ?? null, { invertGood: true })
-  const sleepDelta = deltaText(
-    latest?.sleep_seconds ? latest.sleep_seconds / 3600 : null,
-    baseline?.sleep_seconds_60day_mean ? baseline.sleep_seconds_60day_mean / 3600 : null,
-  )
-  const tsb = baseline?.tsb ?? null
-  const tsbTone: 'good' | 'bad' | 'neutral' =
-    tsb == null ? 'neutral' : tsb > 5 ? 'good' : tsb < -10 ? 'bad' : 'neutral'
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
         {/* Header — personalised greeting */}
-        <div>
-          <div className="text-sm text-muted">{greeting}</div>
-          <h1 className="text-2xl font-semibold tracking-tight mt-0.5">
-            {userName ? `${timeOfDayGreeting()}, ${userName}` : 'Today'}
-          </h1>
+        <div className="flex items-end justify-between">
+          <div>
+            <div className="text-sm text-muted">{greeting}</div>
+            <h1 className="text-2xl font-semibold tracking-tight mt-0.5">
+              {userName ? `${timeOfDayGreeting()}, ${userName}` : 'Today'}
+            </h1>
+          </div>
+          <button
+            onClick={regenerateBrief}
+            disabled={briefLoading}
+            className="text-xs text-muted hover:text-text inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-surface hover:bg-surface-2 transition-colors"
+            title="Regenerate brief"
+          >
+            {briefLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+            {brief ? 'Regenerate brief' : 'Generate brief'}
+          </button>
         </div>
 
-        {/* Brief — the focal point */}
-        <Card>
-          <div className="flex items-center justify-between px-6 pt-5 pb-3">
-            <CardTitle>Morning Brief</CardTitle>
-            <button
-              onClick={regenerateBrief}
-              disabled={briefLoading}
-              className="text-xs text-muted hover:text-text inline-flex items-center gap-1.5 px-2 py-1 rounded"
-              title="Regenerate brief"
-            >
-              {briefLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-              {brief ? 'Regenerate' : 'Generate'}
-            </button>
+        {/* Key Takeaways */}
+        {brief ? (
+          <div className="space-y-3">
+            <div className="text-xs font-medium uppercase tracking-wider text-muted">
+              Key Takeaways
+            </div>
+            {brief.takeaways.map((t, i) => (
+              <TakeawayCard key={i} takeaway={t} />
+            ))}
           </div>
-          <div className="px-6 pb-6">
-            {brief ? (
-              <div className="prose-fitness text-[15px]">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{brief}</ReactMarkdown>
+        ) : (
+          <Card>
+            <div className="p-8 text-center">
+              <div className="text-sm text-muted">
+                No brief yet for today. Click "Generate brief" above.
               </div>
-            ) : (
-              <div className="text-sm text-muted py-4">
-                No brief yet for today. Click Generate.
-              </div>
-            )}
-          </div>
-        </Card>
-
-        {/* Stat cards — at-a-glance under the brief */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard
-            label="Body Battery"
-            value={latest?.body_battery_max?.toString() ?? '—'}
-            delta={bbDelta.text}
-            deltaTone={bbDelta.tone}
-            sub="vs 60d baseline"
-            sparkline={bbSpark}
-          />
-          <StatCard
-            label="Resting HR"
-            value={latest?.rhr?.toString() ?? '—'}
-            unit="bpm"
-            delta={rhrDelta.text}
-            deltaTone={rhrDelta.tone}
-            sub="vs 60d baseline"
-            sparkline={rhrSpark}
-          />
-          <StatCard
-            label="Sleep"
-            value={latest?.sleep_seconds ? fmtSeconds(latest.sleep_seconds) : '—'}
-            delta={sleepDelta.text}
-            deltaTone={sleepDelta.tone}
-            sub={`score ${latest?.sleep_score ?? '—'}`}
-            sparkline={sleepSpark}
-          />
-          <StatCard
-            label="Form (TSB)"
-            value={tsb != null ? tsb.toFixed(1) : '—'}
-            deltaTone={tsbTone}
-            delta={
-              tsb == null ? undefined :
-              tsb > 5 ? 'fresh' :
-              tsb < -20 ? 'very fatigued' :
-              tsb < -10 ? 'fatigued' :
-              'neutral'
-            }
-            sub={baseline ? `CTL ${baseline.ctl?.toFixed(0)} · ATL ${baseline.atl?.toFixed(0)}` : undefined}
-          />
-        </div>
+            </div>
+          </Card>
+        )}
 
         {/* Subtle divider before the conversation */}
         <div className="border-t border-border my-2" />
 
-        {/* Embedded chat — composer + suggestions when empty, conversation when active */}
+        {/* Embedded chat */}
         <ChatPanel />
 
-        {/* Recent workouts — collapsed by default to keep the brief + chat as the focus */}
+        {/* Recent workouts — collapsed by default */}
         <div>
           <button
             onClick={() => setShowWorkouts((v) => !v)}
@@ -198,14 +138,6 @@ export function Today() {
           )}
         </div>
       </div>
-    </div>
-  )
-}
-
-function Loading() {
-  return (
-    <div className="flex-1 flex items-center justify-center">
-      <Loader2 className="size-5 text-muted animate-spin" />
     </div>
   )
 }
