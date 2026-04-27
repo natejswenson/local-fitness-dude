@@ -45,10 +45,17 @@ def main(verbose: bool):
 
 @main.command()
 def setup():
-    """One-time setup: init DB and store Garmin credentials in macOS Keychain."""
+    """One-time setup: init DB, store user name + Garmin credentials."""
     click.echo("Setting up local-fitness…\n")
     db.init_schema()
     click.echo(f"  ✓ DB ready at {db.get_db_path()}")
+
+    current_name = db.get_setting("user_name")
+    name_default = current_name or "Nate"
+    name = click.prompt("Your name (used in briefs and chat)", default=name_default).strip()
+    if name:
+        db.set_setting("user_name", name)
+        click.echo(f"  ✓ Saved name: {name}")
 
     existing = auth.get_credentials()
     if existing:
@@ -140,6 +147,44 @@ def chat_cmd(opus: bool):
 def ask(question: tuple[str, ...], opus: bool):
     """Ask the agent a one-shot question."""
     chat_mod.ask(" ".join(question), model=OPUS if opus else SONNET)
+
+
+@main.group()
+def config():
+    """View or set user settings (name, etc.)."""
+    pass
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str):
+    """Set a config value, e.g. `fitness config set name Nate`."""
+    db.init_schema()
+    # Convenience aliases — `name` → `user_name`
+    if key == "name":
+        key = "user_name"
+    db.set_setting(key, value)
+    click.echo(f"  ✓ {key} = {value}")
+
+
+@config.command("get")
+@click.argument("key", required=False)
+def config_get(key: str | None):
+    """Show one config value, or all of them if no key given."""
+    db.init_schema()
+    if key:
+        if key == "name":
+            key = "user_name"
+        v = db.get_setting(key)
+        click.echo(v if v is not None else "(unset)")
+    else:
+        settings = db.all_settings()
+        if not settings:
+            click.echo("(no settings configured)")
+            return
+        for k, v in settings.items():
+            click.echo(f"  {k} = {v}")
 
 
 @main.command()

@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
     source              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_completed ON ingest_runs(completed_at);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
 """
 
 
@@ -167,3 +172,25 @@ def last_successful_daily_date(db_path: Path | None = None) -> str | None:
             "WHERE status = 'success' AND source = 'daily'"
         ).fetchone()
     return row["d"] if row and row["d"] else None
+
+
+def get_setting(key: str, default: str | None = None, db_path: Path | None = None) -> str | None:
+    """Fetch a single user setting (e.g., 'user_name'). Returns default if unset."""
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str, db_path: Path | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def all_settings(db_path: Path | None = None) -> dict[str, str]:
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
+    return {r["key"]: r["value"] for r in rows}

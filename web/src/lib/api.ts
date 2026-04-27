@@ -8,6 +8,7 @@ async function getJson<T>(url: string): Promise<T> {
 
 export const api = {
   status: () => getJson<unknown>('/api/status'),
+  config: () => getJson<{ user_name: string; settings: Record<string, string> }>('/api/config'),
   today: () => getJson<TodayResponse>('/api/today'),
   metric: (name: string, days = 90) => getJson<MetricSeries>(`/api/metric/${name}?days=${days}`),
   trainingLoad: (days = 180) => getJson<TrainingLoadSeries>(`/api/training-load?days=${days}`),

@@ -15,14 +15,16 @@ export function Today() {
   const [brief, setBrief] = useState<string | null>(null)
   const [briefLoading, setBriefLoading] = useState(false)
   const [showWorkouts, setShowWorkouts] = useState(false)
+  const [userName, setUserName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([api.today(), api.workouts({ days: 30, limit: 8 }), api.brief()])
-      .then(([t, w, b]) => {
+    Promise.all([api.today(), api.workouts({ days: 30, limit: 8 }), api.brief(), api.config()])
+      .then(([t, w, b, c]) => {
         setData(t)
         setWorkouts(w.workouts)
         setBrief(b.markdown)
+        setUserName(c.user_name)
       })
       .catch((e) => setError(String(e)))
   }, [])
@@ -65,10 +67,12 @@ export function Today() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
-        {/* Header */}
+        {/* Header — personalised greeting */}
         <div>
           <div className="text-sm text-muted">{greeting}</div>
-          <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Today</h1>
+          <h1 className="text-2xl font-semibold tracking-tight mt-0.5">
+            {userName ? `${timeOfDayGreeting()}, ${userName}` : 'Today'}
+          </h1>
         </div>
 
         {/* Brief — the focal point */}
@@ -204,4 +208,11 @@ function Loading() {
       <Loader2 className="size-5 text-muted animate-spin" />
     </div>
   )
+}
+
+function timeOfDayGreeting(): string {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
 }

@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.prompt import Prompt
 
+from .. import db
 from . import prompts
 from . import tools as agent_tools
 
@@ -21,11 +22,12 @@ console = Console()
 
 
 def _options(model: str) -> ClaudeAgentOptions:
+    user_name = db.get_setting("user_name", prompts.DEFAULT_USER_NAME)
     server = agent_tools.make_server()
     return ClaudeAgentOptions(
         mcp_servers={agent_tools.SERVER_NAME: server},
         allowed_tools=agent_tools.allowed_tool_names(),
-        system_prompt=prompts.SYSTEM_PROMPT,
+        system_prompt=prompts.system_prompt(user_name),
         model=model,
         permission_mode="bypassPermissions",
         max_turns=50,

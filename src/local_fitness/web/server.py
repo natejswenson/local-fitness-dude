@@ -59,10 +59,11 @@ _session_lock = asyncio.Lock()
 
 
 def _options(model: str) -> ClaudeAgentOptions:
+    user_name = db.get_setting("user_name", prompts.DEFAULT_USER_NAME)
     return ClaudeAgentOptions(
         mcp_servers={agent_tools.SERVER_NAME: agent_tools.make_server()},
         allowed_tools=agent_tools.allowed_tool_names(),
-        system_prompt=prompts.SYSTEM_PROMPT,
+        system_prompt=prompts.system_prompt(user_name),
         model=model,
         permission_mode="bypassPermissions",
         max_turns=50,
@@ -95,6 +96,15 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------- API: data --
+
+@app.get("/api/config")
+async def api_config() -> dict:
+    settings = db.all_settings()
+    return {
+        "user_name": settings.get("user_name", prompts.DEFAULT_USER_NAME),
+        "settings": settings,
+    }
+
 
 @app.get("/api/status")
 async def api_status() -> dict:

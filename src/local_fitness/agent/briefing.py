@@ -17,6 +17,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from .. import db
 from . import prompts
 from . import tools as agent_tools
 
@@ -27,17 +28,18 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 async def _generate(model: str = DEFAULT_MODEL) -> str:
+    user_name = db.get_setting("user_name", prompts.DEFAULT_USER_NAME)
     server = agent_tools.make_server()
     options = ClaudeAgentOptions(
         mcp_servers={agent_tools.SERVER_NAME: server},
         allowed_tools=agent_tools.allowed_tool_names(),
-        system_prompt=prompts.SYSTEM_PROMPT,
+        system_prompt=prompts.system_prompt(user_name),
         model=model,
         permission_mode="bypassPermissions",
         max_turns=20,
     )
     chunks: list[str] = []
-    async for message in query(prompt=prompts.BRIEFING_PROMPT, options=options):
+    async for message in query(prompt=prompts.briefing_prompt(user_name), options=options):
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
