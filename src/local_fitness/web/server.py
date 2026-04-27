@@ -14,6 +14,8 @@ Endpoints:
   GET  /api/workout/{id}            — single workout + splits + zones
   GET  /api/brief                   — today's briefing markdown (cached if exists)
   POST /api/brief/generate          — force-regenerate today's briefing
+  POST /api/sync                    — kick off a background pull (throttled)
+  GET  /api/sync/status             — running flag + last completed run info
   POST /api/chat                    — streaming agent chat (NDJSON)
   GET  /                            — serve the SPA index.html
   GET  /assets/*                    — serve built frontend assets
@@ -24,7 +26,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -46,16 +48,30 @@ from .. import db
 from ..agent import briefing as briefing_mod
 from ..agent import prompts
 from ..agent import tools as agent_tools
+from ..ingest import baselines as baselines_mod
+from ..ingest import daily as daily_ingest
 
 LOG = logging.getLogger(__name__)
 
 WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 BRIEFINGS_DIR = Path.home() / "localrepo" / "local-fitness" / "briefings"
 
+# Auto-sync settings — bite-sized: never pull more than this many days at once,
+# and don't pull more than once per this many minutes from the UI trigger.
+SYNC_MAX_DAYS = 30
+SYNC_THROTTLE_SECONDS = 15 * 60
+
 
 # Per-session ClaudeSDKClient so multi-turn chat keeps context.
 _chat_sessions: dict[str, ClaudeSDKClient] = {}
 _session_lock = asyncio.Lock()
+
+# Auto-sync background-task state. We keep only the running flag in memory;
+# completion history is read from the persistent ingest_runs table so the
+# state survives server restarts.
+_sync_running = False
+_sync_started_at: datetime | None = None
+_sync_lock = asyncio.Lock()
 
 
 def _options(model: str) -> ClaudeAgentOptions:
@@ -275,6 +291,94 @@ async def api_brief_generate(req: BriefGenerateRequest) -> dict:
         "brief": brief.model_dump() if brief else None,
         "cached": False,
     }
+
+
+# ---------------------------------------------------------------- API: sync --
+
+def _last_sync_run() -> dict | None:
+    """Read the most recent daily-source run from ingest_runs."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM ingest_runs WHERE source = 'daily' "
+            "ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _sync_state_dict() -> dict:
+    """Snapshot the current sync state for the API."""
+    last = _last_sync_run()
+    last_completed = last["completed_at"] if last else None
+    last_status = last["status"] if last else None
+    next_eligible_at: str | None = None
+    seconds_until_eligible = 0
+    if last_completed:
+        try:
+            done = datetime.fromisoformat(last_completed)
+            eligible = done + timedelta(seconds=SYNC_THROTTLE_SECONDS)
+            if datetime.now() < eligible:
+                next_eligible_at = eligible.isoformat()
+                seconds_until_eligible = int((eligible - datetime.now()).total_seconds())
+        except ValueError:
+            pass
+    return {
+        "is_running": _sync_running,
+        "started_at": _sync_started_at.isoformat() if _sync_started_at else None,
+        "last_status": last_status,
+        "last_completed_at": last_completed,
+        "last_date_fetched": last["last_date_fetched"] if last else None,
+        "last_error": last["error_message"] if last else None,
+        "throttle_seconds": SYNC_THROTTLE_SECONDS,
+        "next_eligible_at": next_eligible_at,
+        "seconds_until_eligible": seconds_until_eligible,
+        "max_days_per_pull": SYNC_MAX_DAYS,
+    }
+
+
+async def _run_sync():
+    """Worker: call daily.pull in a thread, then recompute baselines if there's new data."""
+    global _sync_running, _sync_started_at
+    try:
+        result = await asyncio.to_thread(daily_ingest.pull, max_days=SYNC_MAX_DAYS)
+        LOG.info("Auto-sync result: %s", result)
+        if result.get("status") == "success" and result.get("days_pulled", 0) > 0:
+            await asyncio.to_thread(baselines_mod.recompute, lookback_days=90)
+            LOG.info("Auto-sync recomputed baselines after %d new days", result["days_pulled"])
+    except Exception:
+        LOG.exception("Auto-sync worker crashed")
+    finally:
+        _sync_running = False
+        _sync_started_at = None
+
+
+@app.post("/api/sync")
+async def api_sync():
+    """Kick off a background pull from Garmin if not already running and not throttled.
+
+    Returns immediately. Poll /api/sync/status to see when it completes.
+    """
+    global _sync_running, _sync_started_at
+    async with _sync_lock:
+        if _sync_running:
+            return {"started": False, "reason": "already_running", "state": _sync_state_dict()}
+        # Throttle: only one pull per SYNC_THROTTLE_SECONDS window.
+        last = _last_sync_run()
+        if last and last.get("completed_at"):
+            try:
+                done = datetime.fromisoformat(last["completed_at"])
+                if datetime.now() - done < timedelta(seconds=SYNC_THROTTLE_SECONDS):
+                    return {"started": False, "reason": "throttled", "state": _sync_state_dict()}
+            except ValueError:
+                pass
+        _sync_running = True
+        _sync_started_at = datetime.now()
+        asyncio.create_task(_run_sync())
+    return {"started": True, "state": _sync_state_dict()}
+
+
+@app.get("/api/sync/status")
+async def api_sync_status():
+    return _sync_state_dict()
 
 
 # ---------------------------------------------------------------- API: chat --

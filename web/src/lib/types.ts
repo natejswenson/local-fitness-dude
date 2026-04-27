@@ -98,3 +98,26 @@ export type BriefResponse = {
   brief: Brief | null
   cached: boolean
 }
+
+// ---- Sync ----
+
+export type SyncStatus = 'success' | 'skipped' | 'partial' | 'failure' | 'auth_failure' | 'not_configured' | 'in_progress' | null
+
+export type SyncState = {
+  is_running: boolean
+  started_at: string | null
+  last_status: SyncStatus
+  last_completed_at: string | null
+  last_date_fetched: string | null
+  last_error: string | null
+  throttle_seconds: number
+  next_eligible_at: string | null
+  seconds_until_eligible: number
+  max_days_per_pull: number
+}
+
+export type SyncTriggerResponse = {
+  started: boolean
+  reason?: 'already_running' | 'throttled'
+  state: SyncState
+}

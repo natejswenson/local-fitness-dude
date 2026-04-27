@@ -1,5 +1,6 @@
 import type {
-  BriefResponse, ChatEvent, MetricSeries, TodayResponse, TrainingLoadSeries, Workout,
+  BriefResponse, ChatEvent, MetricSeries, SyncState, SyncTriggerResponse,
+  TodayResponse, TrainingLoadSeries, Workout,
 } from './types'
 
 async function getJson<T>(url: string): Promise<T> {
@@ -31,6 +32,12 @@ export const api = {
     if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
     return r.json() as Promise<BriefResponse>
   },
+  syncStart: async () => {
+    const r = await fetch('/api/sync', { method: 'POST' })
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+    return r.json() as Promise<SyncTriggerResponse>
+  },
+  syncStatus: () => getJson<SyncState>('/api/sync/status'),
   chatEnd: (sessionId: string) =>
     fetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),
   chat: async function* (

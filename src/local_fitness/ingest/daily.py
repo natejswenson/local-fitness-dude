@@ -223,8 +223,19 @@ def _ingest_activity_range(client: Garmin, conn, start: date, end: date) -> int:
     return n
 
 
-def pull(through: date | None = None, force_from: date | None = None) -> dict:
+def pull(
+    through: date | None = None,
+    force_from: date | None = None,
+    max_days: int | None = None,
+) -> dict:
     """Pull daily wellness + activities since last successful ingest.
+
+    Args:
+        through: end date (default today).
+        force_from: start date, ignoring last-success bookkeeping.
+        max_days: cap the pull window to the most recent N days. If the
+            gap since last success is larger, we clamp the start forward.
+            Lets the auto-sync stay 'bite-sized' even after a long absence.
 
     Returns a summary dict suitable for CLI output.
     """
@@ -237,11 +248,29 @@ def pull(through: date | None = None, force_from: date | None = None) -> dict:
         last = db.last_successful_daily_date()
         start = (date.fromisoformat(last) + timedelta(days=1)) if last else EARLIEST_BACKFILL_DATE
 
+    truncated_from: date | None = None
+    if max_days is not None:
+        cap_start = today - timedelta(days=max_days - 1)
+        if start < cap_start:
+            truncated_from = start
+            start = cap_start
+
     if start > today:
         LOG.info("Already up to date through %s", today)
-        return {"days_pulled": 0, "status": "skipped", "last_date": last if not force_from else None}
+        return {
+            "days_pulled": 0,
+            "status": "skipped",
+            "last_date": last if not force_from else None,
+            "truncated_from": None,
+        }
 
-    LOG.info("Pulling Garmin data %s through %s", start, today)
+    if truncated_from:
+        LOG.info(
+            "Pulling Garmin data %s through %s (capped — would have started %s)",
+            start, today, truncated_from,
+        )
+    else:
+        LOG.info("Pulling Garmin data %s through %s", start, today)
 
     with db.connect() as conn:
         cur = conn.execute(
@@ -269,9 +298,20 @@ def pull(through: date | None = None, force_from: date | None = None) -> dict:
             activities_loaded = _ingest_activity_range(client, conn, start, today)
         status = "success"
     except GarminConnectAuthenticationError as e:
-        status = "failure"
+        status = "auth_failure"
         error = f"auth: {e}"
         LOG.error("Garmin auth failed: %s", e)
+    except RuntimeError as e:
+        # _client() raises this when credentials aren't stored — distinguish
+        # so the UI can show a calm "set up Garmin" hint, not a scary error.
+        if "credentials" in str(e).lower():
+            status = "not_configured"
+            error = str(e)
+            LOG.info("Pull skipped: %s", e)
+        else:
+            status = "partial" if last_ok else "failure"
+            error = str(e)
+            LOG.exception("Pull failed at %s", last_ok or start)
     except Exception as e:
         status = "partial" if last_ok else "failure"
         error = str(e)
@@ -296,4 +336,5 @@ def pull(through: date | None = None, force_from: date | None = None) -> dict:
         "status": status,
         "last_date": last_ok.isoformat() if last_ok else None,
         "error": error,
+        "truncated_from": truncated_from.isoformat() if truncated_from else None,
     }

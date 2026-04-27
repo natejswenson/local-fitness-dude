@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 import type { Brief, Workout } from '@/lib/types'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
+import { SyncIndicator } from './SyncIndicator'
 import { TakeawayCard } from './TakeawayCard'
 import { fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
 
@@ -25,6 +26,12 @@ export function Today() {
       .catch((e) => setError(String(e)))
   }, [])
 
+  // Triggered by SyncIndicator when a background pull just completed
+  // successfully — quietly refetch workouts so any newly-arrived data shows.
+  function onSyncCompleted() {
+    api.workouts({ days: 30, limit: 8 }).then((w) => setWorkouts(w.workouts)).catch(() => {})
+  }
+
   async function regenerateBrief() {
     setBriefLoading(true)
     try {
@@ -45,23 +52,26 @@ export function Today() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
-        {/* Header — personalised greeting */}
-        <div className="flex items-end justify-between">
+        {/* Header — personalised greeting + sync status + regenerate */}
+        <div className="flex items-end justify-between gap-4">
           <div>
             <div className="text-sm text-muted">{greeting}</div>
             <h1 className="text-2xl font-semibold tracking-tight mt-0.5">
               {userName ? `${timeOfDayGreeting()}, ${userName}` : 'Today'}
             </h1>
           </div>
-          <button
-            onClick={regenerateBrief}
-            disabled={briefLoading}
-            className="text-xs text-muted hover:text-text inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-surface hover:bg-surface-2 transition-colors"
-            title="Regenerate brief"
-          >
-            {briefLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-            {brief ? 'Regenerate brief' : 'Generate brief'}
-          </button>
+          <div className="flex items-center gap-2">
+            <SyncIndicator onCompleted={onSyncCompleted} />
+            <button
+              onClick={regenerateBrief}
+              disabled={briefLoading}
+              className="text-xs text-muted hover:text-text inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-surface hover:bg-surface-2 transition-colors"
+              title="Regenerate brief"
+            >
+              {briefLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+              {brief ? 'Regenerate brief' : 'Generate brief'}
+            </button>
+          </div>
         </div>
 
         {/* Key Takeaways */}
