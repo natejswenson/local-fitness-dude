@@ -59,75 +59,17 @@ const METRIC_LABELS: Record<string, { label: string; unit?: string; transform?: 
   tsb: { label: 'Freshness (TSB)' },
 }
 
-export function TakeawayCard({
-  takeaway, onAsk,
-}: {
-  takeaway: Takeaway
-  onAsk?: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const tone = TONE_STYLE[takeaway.tone]
-  const Icon = tone.Icon
+type Series = { date: string; value: number }[]
 
-  return (
-    <Card className={cn('border-l-4', tone.border)}>
-      <div className="px-5 pt-4 pb-2 flex items-start gap-3">
-        <div className={cn('size-8 rounded-lg flex items-center justify-center shrink-0', tone.iconBg)}>
-          <Icon className={cn('size-4', tone.iconColor)} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-base font-semibold tracking-tight leading-snug text-text">
-            {takeaway.headline}
-          </div>
-          <div className="text-sm text-muted mt-1">{takeaway.summary}</div>
-        </div>
-      </div>
-
-      {takeaway.metric && (
-        <div className="px-5 pt-2">
-          <MetricChart
-            metricName={takeaway.metric.metric}
-            days={takeaway.metric.days}
-            color={tone.chartColor}
-          />
-        </div>
-      )}
-
-      <div className="flex items-stretch border-t border-border mt-1">
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex-1 px-5 py-2.5 flex items-center gap-1.5 text-xs text-muted hover:text-text transition-colors"
-        >
-          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          {expanded ? 'Less' : 'More'}
-        </button>
-        {onAsk && (
-          <button
-            onClick={onAsk}
-            className="px-4 py-2.5 flex items-center gap-1.5 text-xs text-muted hover:text-accent transition-colors border-l border-border"
-            title="Ask the agent about this takeaway"
-          >
-            <MessageSquarePlus className="size-3.5" />
-            Ask about this
-          </button>
-        )}
-      </div>
-
-      {expanded && (
-        <div className="px-5 pb-5 prose-fitness text-[14.5px]">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{takeaway.details}</ReactMarkdown>
-        </div>
-      )}
-    </Card>
-  )
-}
-
-function MetricChart({ metricName, days, color }: { metricName: string; days: number; color: string }) {
-  const meta = METRIC_LABELS[metricName] ?? { label: metricName }
-  const [series, setSeries] = useState<{ date: string; value: number }[] | null>(null)
-
+function useMetricSeries(metricName: string | undefined, days: number | undefined): Series | null {
+  const [series, setSeries] = useState<Series | null>(null)
   useEffect(() => {
+    if (!metricName || !days) {
+      setSeries(null)
+      return
+    }
     let cancelled = false
+    const meta = METRIC_LABELS[metricName] ?? { label: metricName }
     const isLoad = metricName === 'ctl' || metricName === 'atl' || metricName === 'tsb'
     const fetcher = isLoad
       ? api.trainingLoad(days).then((r) => r.values.map((v) => ({
@@ -138,10 +80,133 @@ function MetricChart({ metricName, days, color }: { metricName: string; days: nu
           date: v.date,
           value: meta.transform ? meta.transform(v.value) : v.value,
         })))
-    fetcher.then((s) => { if (!cancelled) setSeries(s) })
+    fetcher.then((s) => { if (!cancelled) setSeries(s) }).catch(() => {})
     return () => { cancelled = true }
-  }, [metricName, days, meta])
+  }, [metricName, days])
+  return series
+}
 
+export function TakeawayCard({
+  takeaway, onAsk,
+}: {
+  takeaway: Takeaway
+  onAsk?: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const tone = TONE_STYLE[takeaway.tone]
+  const Icon = tone.Icon
+  const sparkline = useMetricSeries(takeaway.metric?.metric, takeaway.metric?.days)
+
+  return (
+    <Card className={cn('border-l-4 flex flex-col', tone.border)}>
+      <div className="px-4 pt-4 pb-3 flex items-start gap-3 flex-1">
+        <ThumbnailTile
+          tone={tone}
+          Icon={Icon}
+          hasMetric={!!takeaway.metric}
+          series={sparkline}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-[15px] font-semibold tracking-tight leading-snug text-text">
+            {takeaway.headline}
+          </div>
+          <div className="text-[13px] text-muted mt-1.5 leading-relaxed">{takeaway.summary}</div>
+        </div>
+      </div>
+
+      <div className="flex items-stretch border-t border-border mt-auto">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex-1 px-4 py-2.5 flex items-center gap-1.5 text-xs text-muted hover:text-text transition-colors"
+        >
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          {expanded ? 'Less' : 'More'}
+        </button>
+        {onAsk && (
+          <button
+            onClick={onAsk}
+            className="px-3 py-2.5 flex items-center gap-1.5 text-xs text-muted hover:text-accent transition-colors border-l border-border"
+            title="Ask the agent about this takeaway"
+          >
+            <MessageSquarePlus className="size-3.5" />
+            Ask
+          </button>
+        )}
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border">
+          {takeaway.metric && (
+            <div className="px-5 pt-4">
+              <MetricChart
+                metricName={takeaway.metric.metric}
+                days={takeaway.metric.days}
+                color={tone.chartColor}
+              />
+            </div>
+          )}
+          <div className="px-5 py-4 prose-fitness text-[14.5px]">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{takeaway.details}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function ThumbnailTile({
+  tone, Icon, hasMetric, series,
+}: {
+  tone: typeof TONE_STYLE[TakeawayTone]
+  Icon: typeof Sparkles
+  hasMetric: boolean
+  series: Series | null
+}) {
+  // No metric: simple icon tile (rare path).
+  if (!hasMetric) {
+    return (
+      <div className={cn('size-14 rounded-lg flex items-center justify-center shrink-0', tone.iconBg)}>
+        <Icon className={cn('size-5', tone.iconColor)} />
+      </div>
+    )
+  }
+  // With metric: sparkline tile with icon badge in the corner. Visual
+  // signature at-a-glance without devoting a full row to the chart.
+  return (
+    <div className="relative size-14 rounded-lg overflow-hidden shrink-0 bg-bg/40 border border-border/60">
+      <div className={cn(
+        'absolute top-1 left-1 size-5 rounded-md flex items-center justify-center z-10',
+        tone.iconBg,
+      )}>
+        <Icon className={cn('size-3', tone.iconColor)} />
+      </div>
+      {series && series.length > 1 && (
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id={`spk-${tone.chartColor}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={tone.chartColor} stopOpacity={0.45} />
+                <stop offset="100%" stopColor={tone.chartColor} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <Area
+              dataKey="value"
+              stroke={tone.chartColor}
+              strokeWidth={1.4}
+              fill={`url(#spk-${tone.chartColor})`}
+              isAnimationActive={false}
+              dot={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  )
+}
+
+function MetricChart({ metricName, days, color }: { metricName: string; days: number; color: string }) {
+  const meta = METRIC_LABELS[metricName] ?? { label: metricName }
+  const series = useMetricSeries(metricName, days)
   const current = series?.length ? series[series.length - 1].value : null
   const formatValue = (v: number) =>
     meta.unit === 'h' ? `${v.toFixed(1)}h`

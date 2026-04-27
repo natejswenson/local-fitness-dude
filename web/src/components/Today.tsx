@@ -76,7 +76,7 @@ export function Today() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-5">
         {/* Header — personalised greeting + sync status + regenerate */}
         <div className="flex items-end justify-between gap-4">
           <div>
@@ -113,15 +113,20 @@ export function Today() {
           </button>
         )}
 
-        {/* Key Takeaways */}
+        {/* Key Takeaways — multi-column on lg+ to use horizontal space and
+            keep the brief above-the-fold. Each card is compact by default
+            (sparkline thumbnail, headline, summary, action row) and expands
+            inline to show the full chart + details. */}
         {brief ? (
           <div className="space-y-3">
             <div className="text-xs font-medium uppercase tracking-wider text-muted">
               Key Takeaways
             </div>
-            {brief.takeaways.map((t, i) => (
-              <TakeawayCard key={i} takeaway={t} onAsk={() => askAbout(t)} />
-            ))}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {brief.takeaways.map((t, i) => (
+                <TakeawayCard key={i} takeaway={t} onAsk={() => askAbout(t)} />
+              ))}
+            </div>
           </div>
         ) : (
           <Card>
