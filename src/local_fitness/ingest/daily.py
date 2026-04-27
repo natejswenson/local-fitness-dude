@@ -228,49 +228,58 @@ def pull(
     force_from: date | None = None,
     max_days: int | None = None,
 ) -> dict:
-    """Pull daily wellness + activities since last successful ingest.
+    """Gap-aware pull: fill missing dates in `daily_metrics`, freshest first.
 
     Args:
         through: end date (default today).
-        force_from: start date, ignoring last-success bookkeeping.
-        max_days: cap the pull window to the most recent N days. If the
-            gap since last success is larger, we clamp the start forward.
-            Lets the auto-sync stay 'bite-sized' even after a long absence.
+        force_from: when set, target every date in `[force_from, today]`
+            regardless of what's already present (re-pull / backfill use case).
+        max_days: cap the number of dates pulled in this run. Older gaps are
+            deferred to subsequent runs. Keeps auto-sync bite-sized so a
+            long absence doesn't make a single sync take ages.
 
     Returns a summary dict suitable for CLI output.
     """
     db.init_schema()
     today = through or date.today()
 
+    # Build the target list. force_from = full range; otherwise gap-aware.
     if force_from:
-        start = force_from
+        target_dates = [
+            force_from + timedelta(days=i)
+            for i in range((today - force_from).days + 1)
+        ]
     else:
-        last = db.last_known_daily_date()
-        start = (date.fromisoformat(last) + timedelta(days=1)) if last else EARLIEST_BACKFILL_DATE
+        target_dates = db.missing_daily_dates(EARLIEST_BACKFILL_DATE, today)
 
-    truncated_from: date | None = None
-    if max_days is not None:
-        cap_start = today - timedelta(days=max_days - 1)
-        if start < cap_start:
-            truncated_from = start
-            start = cap_start
-
-    if start > today:
-        LOG.info("Already up to date through %s", today)
+    if not target_dates:
+        LOG.info("No missing dates through %s — already up to date", today)
         return {
             "days_pulled": 0,
+            "activities_loaded": 0,
             "status": "skipped",
-            "last_date": last if not force_from else None,
-            "truncated_from": None,
+            "last_date": db.last_known_daily_date(),
+            "error": None,
+            "gap_days_remaining": 0,
+            "deferred_count": 0,
         }
 
-    if truncated_from:
-        LOG.info(
-            "Pulling Garmin data %s through %s (capped — would have started %s)",
-            start, today, truncated_from,
-        )
-    else:
-        LOG.info("Pulling Garmin data %s through %s", start, today)
+    # Most-recent-first so freshness wins. Fill yesterday before backfilling
+    # 2023.
+    target_dates.sort(reverse=True)
+
+    deferred_count = 0
+    if max_days is not None and len(target_dates) > max_days:
+        deferred_count = len(target_dates) - max_days
+        target_dates = target_dates[:max_days]
+
+    pull_min = min(target_dates)
+    pull_max = max(target_dates)
+    LOG.info(
+        "Pulling %d missing day(s) %s..%s%s",
+        len(target_dates), pull_min, pull_max,
+        f" ({deferred_count} older day(s) deferred)" if deferred_count else "",
+    )
 
     with db.connect() as conn:
         cur = conn.execute(
@@ -282,22 +291,46 @@ def pull(
     last_ok = None
     error = None
     days = 0
+    days_failed: list[str] = []
     activities_loaded = 0
     status: str | None = None
 
     try:
         client = _client()
-        d = start
-        while d <= today:
-            with db.connect() as conn:
-                _ingest_day(client, conn, d)
-            days += 1
-            last_ok = d
-            d += timedelta(days=1)
+        for d in target_dates:
+            try:
+                with db.connect() as conn:
+                    _ingest_day(client, conn, d)
+                days += 1
+                if last_ok is None or d > last_ok:
+                    last_ok = d
+            except GarminConnectAuthenticationError:
+                # Auth failures invalidate the rest of the run — bubble up.
+                raise
+            except Exception as e:
+                # One bad day shouldn't poison the whole run.
+                LOG.warning("Day %s ingest failed: %s", d, e)
+                days_failed.append(d.isoformat())
             time.sleep(0.5)
+
+        # Activities: bounding range covers all touched days; INSERT OR REPLACE
+        # makes overlap with existing rows harmless.
         with db.connect() as conn:
-            activities_loaded = _ingest_activity_range(client, conn, start, today)
-        status = "success"
+            activities_loaded = _ingest_activity_range(client, conn, pull_min, pull_max)
+
+        # Honest status: success only if no gap remains AND no day failed
+        # within the pulled window.
+        gap_after = len(db.missing_daily_dates(EARLIEST_BACKFILL_DATE, today))
+        if gap_after == 0 and not days_failed:
+            status = "success"
+        else:
+            status = "partial"
+            parts = []
+            if gap_after:
+                parts.append(f"{gap_after} day(s) still missing")
+            if days_failed:
+                parts.append(f"{len(days_failed)} day(s) failed: {','.join(days_failed[:3])}{'…' if len(days_failed) > 3 else ''}")
+            error = "; ".join(parts) or None
     except GarminConnectAuthenticationError as e:
         status = "auth_failure"
         error = f"auth: {e}"
@@ -312,11 +345,11 @@ def pull(
         else:
             status = "partial" if last_ok else "failure"
             error = str(e)
-            LOG.exception("Pull failed at %s", last_ok or start)
+            LOG.exception("Pull failed at %s", last_ok or pull_max)
     except Exception as e:
         status = "partial" if last_ok else "failure"
         error = str(e)
-        LOG.exception("Pull failed at %s", last_ok or start)
+        LOG.exception("Pull failed at %s", last_ok or pull_max)
     finally:
         # The closing UPDATE has to land on every exit path, including
         # KeyboardInterrupt / SystemExit / hard SIGTERM that bypasses
@@ -341,11 +374,14 @@ def pull(
         except Exception:
             LOG.exception("Failed to close ingest_runs row %s", run_id)
 
+    gap_days_remaining = len(db.missing_daily_dates(EARLIEST_BACKFILL_DATE, today))
+
     return {
         "days_pulled": days,
         "activities_loaded": activities_loaded,
         "status": status,
         "last_date": last_ok.isoformat() if last_ok else None,
         "error": error,
-        "truncated_from": truncated_from.isoformat() if truncated_from else None,
+        "gap_days_remaining": gap_days_remaining,
+        "deferred_count": deferred_count,
     }
