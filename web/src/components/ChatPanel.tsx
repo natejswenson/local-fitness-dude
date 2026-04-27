@@ -13,9 +13,9 @@ type Message =
 
 const SUGGESTIONS = [
   'Should I run hard today?',
-  'Why is my CTL dropping?',
-  'How does last night\'s sleep compare to my baseline?',
-  'What\'s my hardest training week in the last year?',
+  'Why is my fitness slipping?',
+  'How\'s my sleep been lately?',
+  'What was my best stretch of training this year?',
 ]
 
 const newId = () => Math.random().toString(36).slice(2, 10)
