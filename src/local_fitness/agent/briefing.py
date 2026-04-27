@@ -63,6 +63,12 @@ def _extract_json(text: str) -> dict:
 
 async def _generate(model: str = DEFAULT_MODEL) -> Brief:
     user_name = db.get_setting("user_name", prompts.DEFAULT_USER_NAME)
+    # Default 10k matches the universal benchmark; override via
+    # `fitness config set daily_step_goal <N>` if Nate wants a different bar.
+    try:
+        daily_step_goal = int(db.get_setting("daily_step_goal", "10000") or "10000")
+    except ValueError:
+        daily_step_goal = 10000
     server = agent_tools.make_server()
     options = ClaudeAgentOptions(
         mcp_servers={agent_tools.SERVER_NAME: server},
@@ -73,7 +79,10 @@ async def _generate(model: str = DEFAULT_MODEL) -> Brief:
         max_turns=20,
     )
     chunks: list[str] = []
-    async for message in query(prompt=prompts.briefing_prompt(user_name), options=options):
+    async for message in query(
+        prompt=prompts.briefing_prompt(user_name, daily_step_goal),
+        options=options,
+    ):
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):

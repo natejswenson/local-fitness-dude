@@ -55,7 +55,7 @@ cold; he doesn't.
 """
 
 
-def briefing_prompt(user_name: str = DEFAULT_USER_NAME) -> str:
+def briefing_prompt(user_name: str = DEFAULT_USER_NAME, daily_step_goal: int = 10000) -> str:
     return f"""Build today's morning brief for {user_name} as STRUCTURED JSON
 (not markdown) so the UI can render each takeaway as its own expandable
 card with an embedded chart.
@@ -66,24 +66,51 @@ Call (in any sensible order):
 2. training_load_status
 3. query_workouts(days=7)
 4. get_metric_trend(metric="sleep_seconds", days=14)
-5. get_metric_trend(metric="steps", days=14)   — {user_name} cares about
-   his daily step count; surface it as its own takeaway when the trend
-   is notable (climbing, slipping, or anomalously low for him).
+5. get_metric_trend(metric="steps", days=14)   — REQUIRED. {user_name}
+   tracks his daily step count closely and there must be a steps
+   takeaway in every brief (see the "Steps mandate" section below).
 6. find_anomalies for rhr if anything looks off in recent days
 
 # Step 2 — synthesize
-Identify the **3 to 5 things that actually matter today** for {user_name}.
-Examples of what counts as a takeaway:
+Identify the **3 to 5 things that actually matter today** for {user_name},
+and one of those slots is ALWAYS spent on steps (see Steps mandate).
+Examples of the other takeaways:
 - "Get out for an easy run today" (with fitness slide as evidence)
 - "Sleep was the weak link last night" (with sleep trend chart)
 - "Recovery is in great shape" (with RHR + body battery)
 - "Your training is paying off" (with CTL trending up)
-- "Daily steps are creeping up" or "Step count slipped this week"
-  (with steps trend chart over 14 or 30 days)
 
-Order them by importance — most actionable first. Aim for at least one
-takeaway tied to {user_name}'s daily steps when there's a meaningful
-trend or break in pattern; he tracks this metric closely.
+Order them by importance — most actionable first.
+
+# Steps mandate (REQUIRED in every brief)
+{user_name}'s daily step goal is **{daily_step_goal:,} steps/day**. Every
+brief must include exactly one steps takeaway. Pick the framing based on
+where {user_name} is sitting RIGHT NOW relative to that goal:
+
+- **Yesterday hit goal AND 7-day avg hit goal** → tone: positive.
+  Celebrate it. "Crushed your steps goal yesterday — {{N}}, well over
+  your {daily_step_goal:,} target. Streak is real, keep it going."
+
+- **Yesterday hit goal but 7-day avg is slipping** → tone: caution.
+  Flag the trend honestly. "Yesterday landed at {{N}}, but the 7-day
+  average is down to {{X}} — closer to your floor than your usual."
+
+- **Yesterday MISSED goal** → tone: critical. Be sharp. Be harsh.
+  Override the usual "options not commands" voice — for steps,
+  {user_name} explicitly wants to be called out when he's loafing.
+  Examples of the right edge:
+  • "Yesterday came in at {{N}} steps — well under your
+    {daily_step_goal:,} goal. That's a slack day, not a recovery day."
+  • "Three of the last seven days under {daily_step_goal:,}. The
+    pattern is forming — get on it."
+  • "Two days in a row below {daily_step_goal/2:,.0f}. You're not even
+    close. Walk somewhere today, anywhere."
+
+  Don't soften with "if you can" or "no need to push". Be direct:
+  "Get out and walk." "Move today." "Stop coasting." Cite the actual
+  number missed and the gap to goal in plain terms.
+
+The chart for the steps card is always `metric: steps, days: 14`.
 
 # Step 3 — output JSON only
 Return ONLY a JSON object matching this exact shape (no markdown fence,
