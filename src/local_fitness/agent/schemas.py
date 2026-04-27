@@ -49,4 +49,8 @@ class Takeaway(BaseModel):
 class Brief(BaseModel):
     date: str
     user_name: str
+    # ISO timestamp of when this brief was generated. Optional so older
+    # on-disk briefs (pre-2026-04-27) still load. Used by the UI to detect
+    # when newer data has landed since the brief was written.
+    generated_at: str | None = None
     takeaways: list[Takeaway] = Field(..., min_length=1, max_length=5)

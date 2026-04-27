@@ -298,11 +298,27 @@ async def api_workout(activity_id: int) -> dict:
 
 @app.get("/api/brief")
 async def api_brief() -> dict:
-    """Return today's structured Brief if cached, else null."""
+    """Return today's structured Brief if cached, else null.
+
+    Also returns `data_through_date` so the UI can detect when newer
+    data has landed since the brief was generated and offer a
+    regenerate prompt.
+    """
     brief = briefing_mod.load_today()
+    data_through = db.last_known_daily_date()
     if brief:
-        return {"date": brief.date, "brief": brief.model_dump(), "cached": True}
-    return {"date": date.today().isoformat(), "brief": None, "cached": False}
+        return {
+            "date": brief.date,
+            "brief": brief.model_dump(),
+            "cached": True,
+            "data_through_date": data_through,
+        }
+    return {
+        "date": date.today().isoformat(),
+        "brief": None,
+        "cached": False,
+        "data_through_date": data_through,
+    }
 
 
 class BriefGenerateRequest(BaseModel):
@@ -318,6 +334,7 @@ async def api_brief_generate(req: BriefGenerateRequest) -> dict:
         "date": date.today().isoformat(),
         "brief": brief.model_dump() if brief else None,
         "cached": False,
+        "data_through_date": db.last_known_daily_date(),
     }
 
 

@@ -90,6 +90,7 @@ export type Takeaway = {
 export type Brief = {
   date: string
   user_name: string
+  generated_at: string | null
   takeaways: Takeaway[]
 }
 
@@ -97,6 +98,7 @@ export type BriefResponse = {
   date: string
   brief: Brief | null
   cached: boolean
+  data_through_date: string | null
 }
 
 // ---- Sync ----

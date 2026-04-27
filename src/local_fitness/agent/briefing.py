@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -82,6 +82,9 @@ async def _generate(model: str = DEFAULT_MODEL) -> Brief:
     payload = _extract_json(raw)
     payload.setdefault("date", date.today().isoformat())
     payload.setdefault("user_name", user_name)
+    # Stamp the generation time so the UI can detect when newer data has
+    # landed since this brief was written and offer a regenerate banner.
+    payload["generated_at"] = datetime.now().isoformat()
     try:
         return Brief.model_validate(payload)
     except ValidationError as e:
