@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import {
+  Activity, Bike, ChevronDown, ChevronRight, Dumbbell, Footprints,
+  HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Waves,
+} from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Brief, Takeaway, Workout } from '@/lib/types'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
 import { SyncIndicator } from './SyncIndicator'
 import { TakeawayCard } from './TakeawayCard'
-import { fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
+import { cn, fmtDate, fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
 
 type SeedRequest = { text: string; nonce: number }
 
@@ -164,7 +167,7 @@ export function Today() {
                     <thead className="text-xs text-muted">
                       <tr className="text-left">
                         <th className="font-medium pb-2 pr-4">Date</th>
-                        <th className="font-medium pb-2 pr-4">Type</th>
+                        <th className="font-medium pb-2 pr-4">Activity</th>
                         <th className="font-medium pb-2 pr-4 text-right">Distance</th>
                         <th className="font-medium pb-2 pr-4 text-right">Duration</th>
                         <th className="font-medium pb-2 pr-4 text-right">Pace</th>
@@ -173,17 +176,44 @@ export function Today() {
                       </tr>
                     </thead>
                     <tbody className="tabular-nums">
-                      {workouts.map((w) => (
-                        <tr key={w.activity_id} className="border-t border-border">
-                          <td className="py-2 pr-4">{new Date(w.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
-                          <td className="py-2 pr-4 text-muted capitalize">{w.activity_type.replace(/_/g, ' ')}</td>
-                          <td className="py-2 pr-4 text-right">{fmtKm(w.distance_meters)}</td>
-                          <td className="py-2 pr-4 text-right">{fmtSeconds(w.duration_seconds)}</td>
-                          <td className="py-2 pr-4 text-right text-muted">{fmtPace(w.avg_pace_sec_per_km)}</td>
-                          <td className="py-2 pr-4 text-right">{w.avg_hr ?? '—'}</td>
-                          <td className="py-2 text-right text-accent">{w.training_load?.toFixed(0) ?? '—'}</td>
-                        </tr>
-                      ))}
+                      {workouts.map((w) => {
+                        const Icon = activityIcon(w.activity_type)
+                        const loadStyle = trainingLoadStyle(w.training_load)
+                        return (
+                          <tr key={w.activity_id} className="border-t border-border hover:bg-surface/50 transition-colors">
+                            <td className="py-2 pr-4 whitespace-nowrap">
+                              <span className="text-text">{fmtDate(w.date)}</span>
+                            </td>
+                            <td className="py-2 pr-4 text-muted">
+                              <span className="inline-flex items-center gap-2">
+                                <span className="size-6 rounded-md bg-surface-2 flex items-center justify-center shrink-0">
+                                  <Icon className="size-3.5 text-muted" />
+                                </span>
+                                <span className="capitalize">{w.activity_type.replace(/_/g, ' ')}</span>
+                              </span>
+                            </td>
+                            <td className="py-2 pr-4 text-right">{fmtKm(w.distance_meters)}</td>
+                            <td className="py-2 pr-4 text-right">{fmtSeconds(w.duration_seconds)}</td>
+                            <td className="py-2 pr-4 text-right text-muted">{fmtPace(w.avg_pace_sec_per_km)}</td>
+                            <td className="py-2 pr-4 text-right">{w.avg_hr ?? '—'}</td>
+                            <td className="py-2 text-right">
+                              {w.training_load == null ? (
+                                <span className="text-faint">—</span>
+                              ) : (
+                                <span
+                                  className={cn(
+                                    'inline-flex items-center justify-center min-w-[2.25rem] px-1.5 py-0.5 rounded-md text-[12px] font-medium tabular-nums',
+                                    loadStyle,
+                                  )}
+                                  title={loadTooltip(w.training_load)}
+                                >
+                                  {w.training_load.toFixed(0)}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -206,4 +236,36 @@ function timeOfDayGreeting(): string {
   if (h < 12) return 'Good morning'
   if (h < 17) return 'Good afternoon'
   return 'Good evening'
+}
+
+// Lucide icon picker for the most common Garmin activity_type values.
+// Falls back to a generic Activity icon for anything unknown.
+function activityIcon(type: string) {
+  const t = (type || '').toLowerCase()
+  if (t.includes('run') || t.includes('treadmill')) return Footprints
+  if (t.includes('walk')) return Footprints
+  if (t.includes('hik') || t.includes('trail')) return Mountain
+  if (t.includes('cycl') || t.includes('bik')) return Bike
+  if (t.includes('swim')) return Waves
+  if (t.includes('strength') || t.includes('weight')) return Dumbbell
+  if (t.includes('yoga') || t.includes('stretch')) return HandMetal
+  return Activity
+}
+
+// Color the training_load chip by intensity band so a heavy day pops
+// against an easy day at a glance. Bands tuned for Nate's typical
+// workout loads (most outdoor runs ~50-100, longer/harder sessions 100+).
+function trainingLoadStyle(load: number | null): string {
+  if (load == null) return ''
+  if (load >= 150) return 'bg-bad/15 text-bad border border-bad/30'
+  if (load >= 80) return 'bg-warn/15 text-warn border border-warn/30'
+  if (load >= 30) return 'bg-accent/15 text-accent border border-accent-dim'
+  return 'bg-surface-2 text-muted border border-border'
+}
+
+function loadTooltip(load: number): string {
+  if (load >= 150) return `Training load ${load.toFixed(0)} — very hard session`
+  if (load >= 80) return `Training load ${load.toFixed(0)} — hard session`
+  if (load >= 30) return `Training load ${load.toFixed(0)} — moderate session`
+  return `Training load ${load.toFixed(0)} — easy session`
 }
