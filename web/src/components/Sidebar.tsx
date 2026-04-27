@@ -1,10 +1,9 @@
 import { NavLink } from 'react-router-dom'
-import { Activity, MessageSquare, Sparkles } from 'lucide-react'
+import { Activity, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const items = [
-  { to: '/', label: 'Chat', icon: MessageSquare, end: true },
-  { to: '/today', label: 'Today', icon: Sparkles, end: false },
+  { to: '/', label: 'Today', icon: Sparkles, end: true },
   { to: '/trends', label: 'Trends', icon: Activity, end: false },
 ]
 
