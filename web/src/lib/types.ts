@@ -1,0 +1,71 @@
+export type DailyMetric = {
+  date: string
+  sleep_seconds: number | null
+  sleep_score: number | null
+  rhr: number | null
+  avg_stress: number | null
+  max_stress: number | null
+  body_battery_min: number | null
+  body_battery_max: number | null
+  steps: number | null
+  training_status: string | null
+  intensity_minutes_moderate: number | null
+  intensity_minutes_vigorous: number | null
+}
+
+export type Baseline = {
+  date: string
+  rhr_60day_mean: number | null
+  rhr_60day_sd: number | null
+  body_battery_max_60day_mean: number | null
+  body_battery_min_60day_mean: number | null
+  sleep_seconds_60day_mean: number | null
+  sleep_seconds_60day_sd: number | null
+  stress_60day_mean: number | null
+  ctl: number | null
+  atl: number | null
+  tsb: number | null
+}
+
+export type TodayResponse = {
+  today: string
+  latest: DailyMetric & { vo2_max: number | null; respiration_avg: number | null; floors_climbed: number | null } | null
+  recent_14d: DailyMetric[]
+  baseline: Baseline | null
+}
+
+export type MetricSeries = {
+  metric: string
+  days: number
+  values: { date: string; value: number }[]
+  baseline: { date: string; value: number }[] | null
+}
+
+export type TrainingLoadSeries = {
+  days: number
+  values: { date: string; ctl: number; atl: number; tsb: number }[]
+}
+
+export type Workout = {
+  activity_id: number
+  date: string
+  start_time: string
+  activity_type: string
+  activity_name: string
+  duration_seconds: number | null
+  distance_meters: number | null
+  avg_hr: number | null
+  max_hr: number | null
+  avg_pace_sec_per_km: number | null
+  elevation_gain_meters: number | null
+  aerobic_te: number | null
+  anaerobic_te: number | null
+  training_load: number | null
+}
+
+export type ChatEvent =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; name: string; input: Record<string, unknown> }
+  | { type: 'thinking'; text: string }
+  | { type: 'done' }
+  | { type: 'error'; message: string }

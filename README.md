@@ -48,6 +48,10 @@ uv run fitness brief
 # 8. Install the daily launchd job (runs `fitness brief` at 6:30 AM,
 #    catches up on next wake if the Mac was asleep)
 ./ops/install-launchd.sh
+
+# 9. Build + serve the web UI (one-time build; `fitness serve` reads the dist/)
+cd web && pnpm install && pnpm build && cd ..
+uv run fitness serve --open  # opens http://127.0.0.1:8765 in your browser
 ```
 
 ## Usage
@@ -57,6 +61,7 @@ fitness pull                  # pull since last success
 fitness brief                 # pull + recompute + briefing → briefings/YYYY-MM-DD.md
 fitness brief --opus          # use Opus 4.7
 fitness chat                  # interactive REPL
+fitness serve                 # web UI at http://127.0.0.1:8765
 fitness ask "should I run hard today?"
 fitness ask "compare last 30 days vs prior 30 days for RHR" --opus
 fitness status                # DB row counts and last ingest run info
@@ -82,11 +87,45 @@ local-fitness/
 │   │   ├── prompts.py               # system prompt + grounding rules
 │   │   ├── briefing.py              # daily briefing generator
 │   │   └── chat.py                  # REPL + one-shot ask
+│   ├── web/
+│   │   └── server.py                # FastAPI app: REST + NDJSON-stream chat
 │   └── cli.py                       # `fitness` Click entry point
+├── web/                             # Vite + React + TS + Tailwind frontend
+│   ├── src/
+│   │   ├── App.tsx                  # layout + routes
+│   │   ├── components/
+│   │   │   ├── Chat.tsx             # streaming agent conversation
+│   │   │   ├── Today.tsx            # brief + stat cards + recent workouts
+│   │   │   ├── Trends.tsx           # CTL/ATL/TSB + multi-metric charts
+│   │   │   ├── Sidebar.tsx
+│   │   │   ├── StatCard.tsx
+│   │   │   └── Card.tsx
+│   │   ├── lib/{api,types,utils}.ts
+│   │   └── index.css                # Tailwind v4 + theme tokens
+│   └── dist/                        # built bundle — gitignored
 └── ops/
     ├── com.local-fitness.daily.plist
     └── install-launchd.sh
 ```
+
+## Web UI
+
+`fitness serve` starts a localhost-only FastAPI server (default port 8765)
+that exposes the DB + agent over REST and NDJSON-streamed chat, plus serves
+the built React frontend.
+
+Three views:
+- **Chat** (default) — streaming conversation with the agent. Tool calls
+  shown as inline pills so you see what data it's pulling. Sonnet/Opus toggle.
+- **Today** — auto-generated morning brief at top, then stat cards for body
+  battery, RHR, sleep, and form (TSB) with sparklines and 60-day baseline
+  deltas. Recent workouts table at bottom.
+- **Trends** — interactive Banister CTL/ATL/TSB area chart plus a metric
+  picker (RHR, sleep, body battery, stress, VO₂ max) with 60-day baseline
+  overlay where applicable. Date-range toggle (30d → all).
+
+Dev mode: `cd web && pnpm dev` runs Vite at :5173 with API proxied to
+`fitness serve` at :8765.
 
 ## Database
 
