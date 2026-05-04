@@ -7,10 +7,15 @@
   command is itself catch-up safe — it pulls "since last successful date"
   not "yesterday only".
 
+  This is a TEMPLATE. `install-launchd.sh` substitutes __PROJECT_ROOT__
+  and __HOME__ with absolute paths from the host running the install.
+  Don't edit the rendered plist in ~/Library/LaunchAgents directly —
+  re-run the install script instead.
+
   Install:  ./ops/install-launchd.sh
   Inspect:  launchctl list | grep local-fitness
   Trigger:  launchctl kickstart -k gui/$(id -u)/com.local-fitness.daily
-  Logs:     ~/localrepo/local-fitness/logs/{daily.out.log,daily.err.log}
+  Logs:     __PROJECT_ROOT__/logs/{daily.out.log,daily.err.log}
 -->
 <plist version="1.0">
 <dict>
@@ -19,19 +24,19 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/natejswenson/localrepo/local-fitness/.venv/bin/fitness</string>
+        <string>__PROJECT_ROOT__/.venv/bin/fitness</string>
         <string>brief</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/natejswenson/localrepo/local-fitness</string>
+    <string>__PROJECT_ROOT__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/natejswenson/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <string>__HOME__/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
         <key>HOME</key>
-        <string>/Users/natejswenson</string>
+        <string>__HOME__</string>
     </dict>
 
     <key>StartCalendarInterval</key>
@@ -46,10 +51,10 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/natejswenson/localrepo/local-fitness/logs/daily.out.log</string>
+    <string>__PROJECT_ROOT__/logs/daily.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/natejswenson/localrepo/local-fitness/logs/daily.err.log</string>
+    <string>__PROJECT_ROOT__/logs/daily.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

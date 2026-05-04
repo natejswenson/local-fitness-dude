@@ -28,28 +28,32 @@ claude  # then /login if not already authenticated
 # 2. Install deps and the `fitness` command
 uv sync
 
-# 3. Store Garmin creds in macOS Keychain + init DB
+# 3. (Optional) copy .env.example → .env and edit if you need to override
+#    paths or supply Garmin creds via env (vs. macOS Keychain)
+cp .env.example .env
+
+# 4. Store Garmin creds in macOS Keychain + init DB
 uv run fitness setup
 
-# 4. Pull live data (catches up since last successful run)
+# 5. Pull live data (catches up since last successful run)
 uv run fitness pull
 
-# 5. Optional: backfill 3 years of history once your Garmin export ZIP arrives
+# 6. Optional: backfill 3 years of history once your Garmin export ZIP arrives
 #    (Garmin Connect → Account → Account Information → Export Your Data;
 #     they email a ZIP within a few days)
 uv run fitness backfill ~/Downloads/garmin-export.zip
 
-# 6. Recompute baselines + training load
+# 7. Recompute baselines + training load
 uv run fitness recompute-baselines
 
-# 7. Generate today's briefing on demand
+# 8. Generate today's briefing on demand
 uv run fitness brief
 
-# 8. Install the daily launchd job (runs `fitness brief` at 6:30 AM,
+# 9. Install the daily launchd job (runs `fitness brief` at 6:30 AM,
 #    catches up on next wake if the Mac was asleep)
 ./ops/install-launchd.sh
 
-# 9. Build + serve the web UI (one-time build; `fitness serve` reads the dist/)
+# 10. Build + serve the web UI (one-time build; `fitness serve` reads the dist/)
 cd web && pnpm install && pnpm build && cd ..
 uv run fitness serve --open  # opens http://127.0.0.1:8765 in your browser
 ```
@@ -129,7 +133,7 @@ Dev mode: `cd web && pnpm dev` runs Vite at :5173 with API proxied to
 
 ## Database
 
-SQLite at `~/localrepo/local-fitness/data/fitness.db`.
+SQLite at `./data/fitness.db` (project-relative; override with `LOCAL_FITNESS_DATA_DIR`).
 
 Tables: `daily_metrics`, `body_battery_samples`, `stress_samples`,
 `activities`, `activity_hr_zones`, `activity_splits`, `baselines`,

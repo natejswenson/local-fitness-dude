@@ -55,13 +55,14 @@ from ..ingest import daily as daily_ingest
 
 LOG = logging.getLogger(__name__)
 
-WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WEB_DIST = _PROJECT_ROOT / "web" / "dist"
 # Honor the same env override as briefing.py — /briefings inside the
-# container, host path otherwise.
+# container, project-relative `./briefings/` otherwise.
 BRIEFINGS_DIR = Path(
     os.environ.get(
         "LOCAL_FITNESS_BRIEFINGS_DIR",
-        str(Path.home() / "localrepo" / "local-fitness" / "briefings"),
+        str(_PROJECT_ROOT / "briefings"),
     )
 )
 

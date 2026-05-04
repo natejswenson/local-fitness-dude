@@ -2,7 +2,8 @@
 
 Runs the agent and returns a structured Brief (list of Takeaways) so the
 UI can render each one as an expandable card with an embedded chart.
-Persisted as JSON at ~/localrepo/local-fitness/briefings/YYYY-MM-DD.json.
+Persisted as JSON at ``./briefings/YYYY-MM-DD.json`` (or wherever
+``LOCAL_FITNESS_BRIEFINGS_DIR`` points).
 """
 from __future__ import annotations
 
@@ -32,15 +33,18 @@ from .schemas import Brief
 
 LOG = logging.getLogger(__name__)
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
 def _default_briefings_dir() -> Path:
     """Resolve the briefings directory. Honor LOCAL_FITNESS_BRIEFINGS_DIR
     for container deployments where /briefings is a bind-mounted volume;
-    default to the host-CLI path when unset."""
+    default to a project-relative `./briefings/` directory when unset."""
     import os
     override = os.environ.get("LOCAL_FITNESS_BRIEFINGS_DIR")
     if override:
         return Path(override)
-    return Path.home() / "localrepo" / "local-fitness" / "briefings"
+    return _PROJECT_ROOT / "briefings"
 
 
 DEFAULT_BRIEFINGS_DIR = _default_briefings_dir()

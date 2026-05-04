@@ -7,7 +7,7 @@ remains free-form prose.
 """
 from .. import notes as user_notes_mod
 
-DEFAULT_USER_NAME = "Nate"
+DEFAULT_USER_NAME = "the user"
 
 
 def system_prompt(user_name: str = DEFAULT_USER_NAME) -> str:

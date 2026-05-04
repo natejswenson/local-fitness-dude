@@ -19,6 +19,12 @@ from datetime import date as Date
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
+
+# Load `.env` from the project root before anything else reads os.environ.
+# Existing real env vars (set in the shell or by docker-compose) take
+# precedence, so the container path is unaffected.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from . import db
 from .agent import briefing as briefing_mod
@@ -51,8 +57,11 @@ def setup():
     click.echo(f"  ✓ DB ready at {db.get_db_path()}")
 
     current_name = db.get_setting("user_name")
-    name_default = current_name or "Nate"
-    name = click.prompt("Your name (used in briefs and chat)", default=name_default).strip()
+    name = click.prompt(
+        "Your name (used in briefs and chat)",
+        default=current_name or "",
+        show_default=bool(current_name),
+    ).strip()
     if name:
         db.set_setting("user_name", name)
         click.echo(f"  ✓ Saved name: {name}")

@@ -33,6 +33,9 @@ LOG = logging.getLogger(__name__)
 LIVE_FILE_MAX_BYTES = 4096
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _default_notes_path() -> Path:
     """Resolve the notes file path. Honors LOCAL_FITNESS_NOTES_PATH; falls
     back to the same data dir convention as the SQLite DB."""
@@ -40,7 +43,7 @@ def _default_notes_path() -> Path:
     if override:
         return Path(override)
     data_override = os.environ.get("LOCAL_FITNESS_DATA_DIR")
-    base = Path(data_override) if data_override else Path.home() / "localrepo" / "local-fitness" / "data"
+    base = Path(data_override) if data_override else _PROJECT_ROOT / "data"
     return base / "user_notes.md"
 
 

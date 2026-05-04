@@ -15,14 +15,17 @@ from pathlib import Path
 from typing import Iterator
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _default_db_path() -> Path:
     """Resolve the SQLite path. Honor LOCAL_FITNESS_DATA_DIR for container
-    deployments where /data is a bind-mounted volume; default to the
-    host-CLI path when unset."""
+    deployments where /data is a bind-mounted volume; default to a
+    project-relative `./data/` directory when unset."""
     override = os.environ.get("LOCAL_FITNESS_DATA_DIR")
     if override:
         return Path(override) / "fitness.db"
-    return Path.home() / "localrepo" / "local-fitness" / "data" / "fitness.db"
+    return _PROJECT_ROOT / "data" / "fitness.db"
 
 
 DEFAULT_DB_PATH = _default_db_path()

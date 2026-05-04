@@ -641,6 +641,7 @@ dependencies = [
     { name = "fitparse" },
     { name = "garminconnect" },
     { name = "keyring" },
+    { name = "python-dotenv" },
     { name = "rich" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -660,6 +661,7 @@ requires-dist = [
     { name = "fitparse", specifier = ">=1.2.0" },
     { name = "garminconnect", specifier = ">=0.3.3" },
     { name = "keyring", specifier = ">=25.7.0" },
+    { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.46.0" },
 ]
