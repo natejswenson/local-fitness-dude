@@ -26,7 +26,10 @@ import asyncio
 import json
 import logging
 import os
+import secrets
+import sys
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -42,7 +45,7 @@ from claude_agent_sdk import (
 )
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -54,6 +57,22 @@ from ..ingest import baselines as baselines_mod
 from ..ingest import daily as daily_ingest
 
 LOG = logging.getLogger(__name__)
+
+# Bearer token gating /api/* endpoints. When unset AND the server binds to
+# loopback only, requests are accepted (host-CLI dev convenience). When
+# binding to a non-loopback host (container behind Traefik), `serve()`
+# refuses to start without one — see the startup check.
+API_TOKEN = os.environ.get("LOCAL_FITNESS_API_TOKEN") or None
+
+# Per-IP rate limits for the expensive endpoints — chat and brief
+# generation both hit Claude. Anyone on the LAN with API token access
+# could otherwise loop these and drain the subscription. Bucket is an
+# in-memory deque of recent request timestamps; refilled by elapsed time.
+RATE_LIMITED_PREFIXES = ("/api/chat", "/api/brief/generate")
+RATE_LIMIT_WINDOW_SEC = 60.0
+RATE_LIMIT_MAX_REQUESTS = 20  # 20 requests per IP per minute on Claude-cost endpoints
+_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+_rate_lock = asyncio.Lock()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIST = _PROJECT_ROOT / "web" / "dist"
@@ -147,6 +166,96 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- Security middleware -----------------------------------------------
+# Order: outermost wraps innermost. Defined later in the file = outer.
+# Rate-limit runs OUTSIDE auth so a flood with bad tokens is still capped.
+
+def _is_public_path(path: str) -> bool:
+    """Routes anyone can hit: liveness probe and the SPA shell + its
+    assets. Everything under /api/ requires the token, including
+    /api/auth/verify — that endpoint's whole purpose is to bounce a
+    bad-token request to 401 so the login screen can re-prompt."""
+    if path == "/health":
+        return True
+    if not path.startswith("/api/"):
+        return True  # SPA shell, /assets/*, etc. — handled by static routes
+    return False
+
+
+@app.middleware("http")
+async def require_api_token(request: Request, call_next):
+    """Bearer-token gate for /api/* endpoints.
+
+    Off when ``LOCAL_FITNESS_API_TOKEN`` is unset (dev convenience on
+    loopback). On when set: every /api/* request must carry
+    ``Authorization: Bearer <token>``. Constant-time comparison prevents
+    timing-side-channel guessing.
+    """
+    path = request.url.path
+    if API_TOKEN is None or _is_public_path(path):
+        return await call_next(request)
+    auth_header = request.headers.get("authorization", "")
+    expected = f"Bearer {API_TOKEN}"
+    if not secrets.compare_digest(auth_header, expected):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """Per-IP token bucket on Claude-cost endpoints.
+
+    Loopback IPs are exempt — host-CLI dev should never get throttled by
+    its own UI. The bucket is purely in-memory; restart resets state,
+    which is fine for a single-instance personal app.
+    """
+    path = request.url.path
+    if not any(path.startswith(p) for p in RATE_LIMITED_PREFIXES):
+        return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if client_ip in ("127.0.0.1", "::1", "localhost"):
+        return await call_next(request)
+    now = time.monotonic()
+    cutoff = now - RATE_LIMIT_WINDOW_SEC
+    async with _rate_lock:
+        bucket = _rate_buckets[client_ip]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            retry_after = int(bucket[0] + RATE_LIMIT_WINDOW_SEC - now) + 1
+            LOG.warning("Rate limit hit for %s on %s (retry in %ds)", client_ip, path, retry_after)
+            return JSONResponse(
+                {"error": "rate_limited", "retry_after_seconds": retry_after},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Defense-in-depth headers. Cheap to add, no functional cost."""
+    response: Response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    return response
+
+
+# ---------- Auth-verify probe -------------------------------------------------
+# The login screen calls this to validate a freshly-pasted token before
+# storing it in localStorage. Returns 200 when the request reaches the
+# handler (auth middleware passed), 401 otherwise. Intentionally trivial.
+
+@app.get("/api/auth/verify")
+async def api_auth_verify(request: Request) -> dict:
+    # By the time we get here, the auth middleware has already validated
+    # the token (or there's no token configured). Either way it's "ok".
+    return {"ok": True, "auth_required": API_TOKEN is not None}
 
 
 # ---------------------------------------------------------------- API: data --
@@ -695,19 +804,31 @@ async def api_notes_delete(line_index: int) -> dict:
 
 if WEB_DIST.exists():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+    _WEB_DIST_RESOLVED = WEB_DIST.resolve()
+    _SPA_INDEX = _WEB_DIST_RESOLVED / "index.html"
 
     @app.get("/")
     async def root() -> FileResponse:
-        return FileResponse(WEB_DIST / "index.html")
+        return FileResponse(_SPA_INDEX)
 
     @app.get("/{full_path:path}", response_model=None)
     async def spa_fallback(full_path: str, request: Request):
         if full_path.startswith("api/"):
             return JSONResponse({"error": "not found"}, status_code=404)
-        target = WEB_DIST / full_path
-        if target.is_file():
-            return FileResponse(target)
-        return FileResponse(WEB_DIST / "index.html")
+        # Resolve the requested path and confirm it's still inside WEB_DIST.
+        # Without this, `..` segments in the URL escape the doc root and
+        # `FileResponse` happily serves anything the process can read —
+        # confirmed exploitable in the 2026-05-04 audit (curl --path-as-is).
+        candidate = (WEB_DIST / full_path).resolve()
+        try:
+            candidate.relative_to(_WEB_DIST_RESOLVED)
+        except ValueError:
+            # Escaped — treat as a SPA route request and return index.html.
+            # Don't surface 403 / 404; the SPA's client-side router decides.
+            return FileResponse(_SPA_INDEX)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_SPA_INDEX)
 else:
     @app.get("/")
     async def root_no_build() -> dict:
@@ -718,15 +839,39 @@ else:
         }
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def serve(host: str | None = None, port: int = 8765, reload: bool = False) -> None:
     """Start uvicorn. CLI entry point uses this.
 
     Host defaults to LOCAL_FITNESS_HOST env var if set, else 127.0.0.1.
     The Dockerfile sets it to 0.0.0.0 so the container exposes the port
     to the Docker network; host CLI keeps the loopback-only default.
+
+    Refuses to start on a non-loopback host without ``LOCAL_FITNESS_API_TOKEN``
+    set. The /api/* endpoints expose all wellness data, the chat endpoint
+    can drain Claude subscription quota, and the user-notes endpoints can
+    rewrite agent memory — so unauthenticated LAN exposure is a no.
     """
     import uvicorn
     resolved_host = host or os.environ.get("LOCAL_FITNESS_HOST", "127.0.0.1")
+
+    if resolved_host not in _LOOPBACK_HOSTS and API_TOKEN is None:
+        LOG.error(
+            "Refusing to bind %s:%d without LOCAL_FITNESS_API_TOKEN — "
+            "/api/* would be reachable on the LAN with no authentication. "
+            "Set the env var (e.g. python -c 'import secrets; print(secrets.token_urlsafe(32))') "
+            "and restart, or bind to 127.0.0.1 for loopback-only.",
+            resolved_host, port,
+        )
+        sys.exit(1)
+    if API_TOKEN is None:
+        LOG.warning(
+            "Server binding to loopback (%s) without LOCAL_FITNESS_API_TOKEN — "
+            "/api/* is open. Fine for host-CLI dev; set the token before exposing.",
+            resolved_host,
+        )
     LOG.info("Serving on http://%s:%d", resolved_host, port)
     uvicorn.run(
         "local_fitness.web.server:app" if reload else app,

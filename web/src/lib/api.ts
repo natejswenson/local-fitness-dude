@@ -3,13 +3,90 @@ import type {
   SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
 } from './types'
 
+// --- Auth token ---------------------------------------------------------
+// The server gates /api/* with a bearer token when LOCAL_FITNESS_API_TOKEN
+// is set. The frontend stores the token in localStorage; the AuthGate
+// component prompts for it on first load (and on any 401 response).
+
+const TOKEN_KEY = 'local-fitness:api-token'
+
+export const authToken = {
+  get: (): string | null => {
+    try {
+      return window.localStorage.getItem(TOKEN_KEY)
+    } catch {
+      return null
+    }
+  },
+  set: (value: string) => {
+    try {
+      window.localStorage.setItem(TOKEN_KEY, value)
+    } catch {
+      // localStorage disabled (private mode, etc.) — the AuthGate will
+      // re-prompt on every load. Acceptable degradation.
+    }
+  },
+  clear: () => {
+    try {
+      window.localStorage.removeItem(TOKEN_KEY)
+    } catch { /* see above */ }
+  },
+}
+
+/**
+ * Thrown by the fetch wrapper when the server rejects the bearer token.
+ * The AuthGate listens for this and re-shows the token-entry form so the
+ * user can paste a fresh token without reloading the page.
+ */
+export class AuthRequiredError extends Error {
+  constructor() {
+    super('Auth required')
+    this.name = 'AuthRequiredError'
+  }
+}
+
+const _onAuthRequiredHandlers = new Set<() => void>()
+
+export function onAuthRequired(handler: () => void): () => void {
+  _onAuthRequiredHandlers.add(handler)
+  return () => _onAuthRequiredHandlers.delete(handler)
+}
+
+function _signalAuthRequired() {
+  authToken.clear()
+  for (const h of _onAuthRequiredHandlers) {
+    try { h() } catch { /* swallow per-handler */ }
+  }
+}
+
+function withAuth(init?: RequestInit): RequestInit {
+  const token = authToken.get()
+  if (!token) return init ?? {}
+  const headers = new Headers(init?.headers)
+  headers.set('Authorization', `Bearer ${token}`)
+  return { ...init, headers }
+}
+
+async function authedFetch(input: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(input, withAuth(init))
+  if (r.status === 401) {
+    _signalAuthRequired()
+    throw new AuthRequiredError()
+  }
+  return r
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const r = await fetch(url)
+  const r = await authedFetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
   return r.json()
 }
 
 export const api = {
+  /** Probe whether auth is required AND whether the current token works.
+   * Returns `{ ok: true }` when accepted (or when auth isn't configured),
+   * throws `AuthRequiredError` when the server says 401. */
+  authVerify: () => getJson<{ ok: boolean; auth_required: boolean }>('/api/auth/verify'),
   status: () => getJson<unknown>('/api/status'),
   config: () => getJson<{ user_name: string; settings: Record<string, string> }>('/api/config'),
   today: () => getJson<TodayResponse>('/api/today'),
@@ -24,7 +101,7 @@ export const api = {
   },
   brief: () => getJson<BriefResponse>('/api/brief'),
   briefGenerate: async (model: string) => {
-    const r = await fetch('/api/brief/generate', {
+    const r = await authedFetch('/api/brief/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
@@ -36,7 +113,7 @@ export const api = {
     model: string,
     signal?: AbortSignal,
   ): AsyncGenerator<BriefStreamEvent> {
-    const r = await fetch('/api/brief/generate/stream', {
+    const r = await authedFetch('/api/brief/generate/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
@@ -65,20 +142,20 @@ export const api = {
   },
   syncStart: async (opts: { force?: boolean } = {}) => {
     const url = opts.force ? '/api/sync?force=true' : '/api/sync'
-    const r = await fetch(url, { method: 'POST' })
+    const r = await authedFetch(url, { method: 'POST' })
     if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
     return r.json() as Promise<SyncTriggerResponse>
   },
   syncStatus: () => getJson<SyncState>('/api/sync/status'),
   chatEnd: (sessionId: string) =>
-    fetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),
+    authedFetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),
   chat: async function* (
     sessionId: string,
     message: string,
     model: string,
     signal?: AbortSignal,
   ): AsyncGenerator<ChatEvent> {
-    const r = await fetch('/api/chat', {
+    const r = await authedFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, message, model }),

@@ -131,6 +131,26 @@ Three views:
 Dev mode: `cd web && pnpm dev` runs Vite at :5173 with API proxied to
 `fitness serve` at :8765.
 
+### Auth
+
+The server gates `/api/*` with a bearer token via the
+`LOCAL_FITNESS_API_TOKEN` env var. When binding to a non-loopback host
+(container behind Traefik, anything other than `127.0.0.1`/`localhost`)
+the token is **required** — the server refuses to start without it.
+Loopback bind without a token still works for host-CLI dev.
+
+Generate one:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Paste it into `.env` as `LOCAL_FITNESS_API_TOKEN=…`. On first load of the
+web UI per device, a token-entry screen prompts for the same value;
+the browser remembers it via `localStorage`. Cost-sensitive endpoints
+(`/api/chat`, `/api/brief/generate*`) are also rate-limited per-IP at 20
+requests / minute as defense-in-depth against subscription drain.
+
 ## Database
 
 SQLite at `./data/fitness.db` (project-relative; override with `LOCAL_FITNESS_DATA_DIR`).
