@@ -140,3 +140,62 @@ export type SyncTriggerResponse = {
   reason?: 'already_running' | 'throttled'
   state: SyncState
 }
+
+// ---- Custom dashboards ----
+
+export type ActivityHeatmapDay = {
+  date: string
+  activity_count: number
+  total_load: number
+  total_duration_seconds: number
+  dominant_type: string | null
+}
+
+export type ActivityHeatmapResponse = {
+  days: number
+  start_date: string
+  end_date: string
+  values: ActivityHeatmapDay[]
+}
+
+export type StrengthVolumeWeek = {
+  iso_week: string
+  week_start: string
+  sessions: number
+  total_duration_min: number
+  total_load: number
+  total_calories: number
+}
+
+export type StrengthVolumeResponse = {
+  weeks: number
+  start_date: string
+  end_date: string
+  values: StrengthVolumeWeek[]
+  last_session_date: string | null
+  total_sessions: number
+}
+
+export type PaceEfficiencyRun = {
+  date: string
+  start_time: string
+  activity_type: string
+  activity_name: string
+  avg_hr: number
+  avg_pace_sec_per_km: number
+  distance_meters: number
+  duration_seconds: number
+  training_load: number | null
+  hr_per_kmh: number | null
+  tsb: number | null
+  ctl: number | null
+  atl: number | null
+}
+
+export type PaceEfficiencyResponse = {
+  days: number
+  min_distance_km: number
+  start_date: string
+  end_date: string
+  values: PaceEfficiencyRun[]
+}

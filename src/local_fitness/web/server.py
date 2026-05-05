@@ -421,6 +421,174 @@ async def api_workout(activity_id: int) -> dict:
     return {"activity": activity, "hr_zones": zones, "splits": splits}
 
 
+# ---------------------------------------------------------------- API: dashboards --
+# Custom dashboards beyond the per-metric / single-workout endpoints.
+# Heatmap, strength tracker, and pace-efficiency views.
+
+@app.get("/api/activity-heatmap")
+async def api_activity_heatmap(days: int = Query(365, ge=7, le=2000)) -> dict:
+    """Per-day training-load aggregate for a calendar heatmap.
+
+    Returns rows ONLY for days with at least one activity — the frontend
+    fills the full N-day grid and treats missing dates as rest days.
+    `dominant_type` is whichever type appears most often that day.
+    """
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with db.connect() as conn:
+        # Top-level aggregate per day.
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT date,
+                   COUNT(*) AS activity_count,
+                   COALESCE(SUM(training_load), 0) AS total_load,
+                   COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
+            FROM activities
+            WHERE date >= ?
+            GROUP BY date
+            ORDER BY date
+            """,
+            (cutoff,),
+        ).fetchall()]
+        # Dominant type per day — separate query so we don't fight SQLite's
+        # GROUP BY semantics with a window function.
+        type_rows = conn.execute(
+            """
+            SELECT date, activity_type, COUNT(*) AS n
+            FROM activities
+            WHERE date >= ?
+            GROUP BY date, activity_type
+            ORDER BY date, n DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+    dominant_by_date: dict[str, str] = {}
+    for tr in type_rows:
+        dominant_by_date.setdefault(tr["date"], tr["activity_type"])
+    for row in rows:
+        row["dominant_type"] = dominant_by_date.get(row["date"])
+    return {
+        "days": days,
+        "start_date": cutoff,
+        "end_date": date.today().isoformat(),
+        "values": rows,
+    }
+
+
+# Garmin-reported strength activity types. Loose match against the
+# union; not a hardcoded set so "strength_training" / "indoor_climbing"
+# / future variants pass without code change.
+_STRENGTH_TYPE_PATTERNS = ("strength_training", "weight_training", "strength")
+
+
+@app.get("/api/strength-volume")
+async def api_strength_volume(weeks: int = Query(104, ge=1, le=520)) -> dict:
+    """Weekly aggregates of strength-tagged activities.
+
+    Default lookback is 104 weeks (2 years) because Garmin Instinct
+    Solar doesn't natively log strength frequently — short windows
+    often look empty even when historical data is rich. Returns
+    sessions / total duration / total load per week, plus the most
+    recent session date so the frontend can show a freshness signal.
+    """
+    cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+    type_filter = " OR ".join(["activity_type LIKE ?"] * len(_STRENGTH_TYPE_PATTERNS))
+    type_params = [f"%{p}%" for p in _STRENGTH_TYPE_PATTERNS]
+    with db.connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            f"""
+            SELECT
+              strftime('%Y-%W', date) AS iso_week,
+              MIN(date) AS week_start,
+              COUNT(*) AS sessions,
+              COALESCE(SUM(duration_seconds), 0) / 60.0 AS total_duration_min,
+              COALESCE(SUM(training_load), 0) AS total_load,
+              COALESCE(SUM(calories), 0) AS total_calories
+            FROM activities
+            WHERE date >= ? AND ({type_filter})
+            GROUP BY iso_week
+            ORDER BY week_start
+            """,
+            (cutoff, *type_params),
+        ).fetchall()]
+        last_session = conn.execute(
+            f"""
+            SELECT date FROM activities
+            WHERE {type_filter}
+            ORDER BY date DESC LIMIT 1
+            """,
+            type_params,
+        ).fetchone()
+    return {
+        "weeks": weeks,
+        "start_date": cutoff,
+        "end_date": date.today().isoformat(),
+        "values": rows,
+        "last_session_date": last_session["date"] if last_session else None,
+        "total_sessions": sum(r["sessions"] for r in rows),
+    }
+
+
+@app.get("/api/pace-efficiency")
+async def api_pace_efficiency(
+    days: int = Query(180, ge=7, le=2000),
+    min_distance_km: float = Query(1.0, ge=0.0, le=200.0),
+) -> dict:
+    """Per-run HR/pace efficiency series with TSB overlay.
+
+    The "efficiency" signal is HR per km/h: `avg_hr * (avg_pace_sec_per_km
+    / 3600)`. Lower = better (less HR for the same speed). Trends UP
+    when fatigue or detraining set in — overlaying TSB (negative =
+    accumulated fatigue) lets the chart show whether the rise tracks
+    intentional load or unrecovered drift.
+
+    Filtered to running-family types and a minimum distance so 5-minute
+    treadmill warm-ups don't pollute the trend. Distance and pace are
+    bounds-checked at the SQL level.
+    """
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    min_distance_m = min_distance_km * 1000.0
+    with db.connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT a.date,
+                   a.start_time,
+                   a.activity_type,
+                   a.activity_name,
+                   a.avg_hr,
+                   a.avg_pace_sec_per_km,
+                   a.distance_meters,
+                   a.duration_seconds,
+                   a.training_load,
+                   b.tsb,
+                   b.ctl,
+                   b.atl
+            FROM activities a
+            LEFT JOIN baselines b ON b.date = a.date
+            WHERE a.date >= ?
+              AND a.activity_type LIKE '%running%'
+              AND a.avg_hr IS NOT NULL
+              AND a.avg_pace_sec_per_km IS NOT NULL
+              AND a.avg_pace_sec_per_km > 0
+              AND a.distance_meters >= ?
+            ORDER BY a.start_time
+            """,
+            (cutoff, min_distance_m),
+        ).fetchall()]
+    # Compute the efficiency ratio in Python so it stays explicit.
+    for r in rows:
+        pace_sec = r["avg_pace_sec_per_km"] or 0
+        hr = r["avg_hr"] or 0
+        # HR per km/h. (km/h = 3600 / pace_sec_per_km)
+        r["hr_per_kmh"] = round(hr * pace_sec / 3600.0, 2) if pace_sec else None
+    return {
+        "days": days,
+        "min_distance_km": min_distance_km,
+        "start_date": cutoff,
+        "end_date": date.today().isoformat(),
+        "values": rows,
+    }
+
+
 # ---------------------------------------------------------------- API: brief --
 
 @app.get("/api/brief")

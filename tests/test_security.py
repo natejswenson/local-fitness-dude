@@ -146,6 +146,28 @@ async def test_auth_verify_path_is_public(app_with_token):
 
 
 @pytest.mark.anyio
+async def test_dashboards_require_auth(app_with_token):
+    """All three dashboard endpoints land under /api/, so the bearer
+    middleware should gate them automatically. Pinning the contract so
+    a future endpoint move can't quietly drop auth."""
+    transport = httpx.ASGITransport(app=app_with_token.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        for path in (
+            "/api/activity-heatmap",
+            "/api/strength-volume",
+            "/api/pace-efficiency",
+        ):
+            r = await c.get(path)
+            assert r.status_code == 401, f"{path} returned {r.status_code}"
+            r = await c.get(
+                path, headers={"Authorization": "Bearer test-token-fixed"}
+            )
+            assert r.status_code == 200, f"{path} with token returned {r.status_code}: {r.text}"
+            body = r.json()
+            assert "values" in body, f"{path} response missing `values`: {body}"
+
+
+@pytest.mark.anyio
 async def test_security_headers_present(app_no_token):
     transport = httpx.ASGITransport(app=app_no_token.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:

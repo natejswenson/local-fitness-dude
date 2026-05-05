@@ -1,0 +1,589 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Bar, BarChart, CartesianGrid, ComposedChart, Line, ReferenceLine,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
+import { Loader2 } from 'lucide-react'
+import { api } from '@/lib/api'
+import { Card, CardBody, CardHeader, CardTitle } from './Card'
+import { fmtDate, fmtDateShort } from '@/lib/utils'
+import type {
+  ActivityHeatmapDay, PaceEfficiencyRun, StrengthVolumeWeek,
+} from '@/lib/types'
+
+/**
+ * Custom dashboards page. Three views, all hitting the new
+ * /api/activity-heatmap, /api/strength-volume, and /api/pace-efficiency
+ * endpoints. Loosely modeled on Trends — same Card/RangeToggle pattern,
+ * same Recharts-with-CSS-vars approach for theming.
+ */
+export function Dashboards() {
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        <header>
+          <div className="text-sm text-muted">Custom views</div>
+          <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Dashboards</h1>
+        </header>
+
+        <ActivityHeatmapPanel />
+        <PaceEfficiencyPanel />
+        <StrengthTrackerPanel />
+      </div>
+    </div>
+  )
+}
+
+// =====================================================================
+// Activity heatmap — calendar-style year view (52 weeks × 7 days)
+// =====================================================================
+
+const HEATMAP_RANGES = [
+  { label: '90d', days: 90 },
+  { label: '6mo', days: 180 },
+  { label: '1y', days: 365 },
+  { label: '2y', days: 730 },
+] as const
+
+function ActivityHeatmapPanel() {
+  const [days, setDays] = useState<number>(365)
+  const [data, setData] = useState<ActivityHeatmapDay[] | null>(null)
+  const [hover, setHover] = useState<ActivityHeatmapDay | { date: string; rest: true } | null>(null)
+
+  useEffect(() => {
+    setData(null)
+    api.activityHeatmap(days).then((r) => setData(r.values))
+  }, [days])
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-end justify-between gap-3 flex-wrap">
+          <CardTitle>Activity heatmap</CardTitle>
+          <RangeToggle
+            options={HEATMAP_RANGES.map((r) => ({ label: r.label, value: r.days }))}
+            value={days}
+            onChange={setDays}
+          />
+        </div>
+      </CardHeader>
+      <CardBody>
+        {data == null ? (
+          <ChartLoading />
+        ) : (
+          <div className="space-y-3">
+            <HeatmapGrid days={days} data={data} onHover={setHover} />
+            <HeatmapFooter hover={hover} data={data} />
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  )
+}
+
+const MS_DAY = 86_400_000
+
+function startOfDayUTC(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+}
+
+function HeatmapGrid({
+  days, data, onHover,
+}: {
+  days: number
+  data: ActivityHeatmapDay[]
+  onHover: (d: ActivityHeatmapDay | { date: string; rest: true } | null) => void
+}) {
+  // Build the cell grid. Rows = day of week (0=Sun…6=Sat), cols = weeks.
+  // Anchor on today (rightmost column) and walk back N days so the grid
+  // ends exactly on today's column.
+  const { weeks, maxLoad } = useMemo(() => {
+    const byDate = new Map(data.map((d) => [d.date, d]))
+    const today = startOfDayUTC(new Date())
+    const earliestStart = startOfDayUTC(new Date(today.getTime() - (days - 1) * MS_DAY))
+    // Round earliestStart down to the most recent Sunday so the first
+    // column starts on a Sunday — keeps the grid aligned visually.
+    const startWeek = new Date(earliestStart)
+    startWeek.setUTCDate(startWeek.getUTCDate() - startWeek.getUTCDay())
+
+    const weeks: { date: string; row: number; col: number; entry?: ActivityHeatmapDay }[] = []
+    let col = 0
+    let cursor = new Date(startWeek)
+    while (cursor <= today) {
+      for (let row = 0; row < 7; row++) {
+        const cellDate = new Date(cursor.getTime() + row * MS_DAY)
+        if (cellDate < earliestStart || cellDate > today) continue
+        const iso = cellDate.toISOString().slice(0, 10)
+        weeks.push({ date: iso, row, col, entry: byDate.get(iso) })
+      }
+      col++
+      cursor = new Date(cursor.getTime() + 7 * MS_DAY)
+    }
+    const maxLoad = Math.max(50, ...data.map((d) => d.total_load))
+    return { weeks, maxLoad }
+  }, [data, days])
+
+  const cellSize = 12
+  const gap = 2
+  const cols = Math.max(...weeks.map((w) => w.col)) + 1
+  const widthPx = cols * (cellSize + gap)
+  const heightPx = 7 * (cellSize + gap)
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        width={widthPx}
+        height={heightPx + 18}
+        className="select-none"
+        onMouseLeave={() => onHover(null)}
+      >
+        {/* Day-of-week labels — only Mon/Wed/Fri, faint */}
+        {[1, 3, 5].map((dow) => (
+          <text
+            key={dow}
+            x={-2}
+            y={dow * (cellSize + gap) + cellSize - 1}
+            fontSize="9"
+            textAnchor="end"
+            fill="var(--color-faint)"
+          >
+            {['', 'Mon', '', 'Wed', '', 'Fri', ''][dow]}
+          </text>
+        ))}
+        {/* Cells */}
+        {weeks.map((cell) => {
+          const intensity = cell.entry
+            ? Math.min(1, cell.entry.total_load / maxLoad)
+            : null
+          const fill = intensity == null
+            ? 'var(--color-surface-2)'
+            : `oklch(${(0.32 + intensity * 0.42).toFixed(3)} ${(0.05 + intensity * 0.18).toFixed(3)} ${(155 - intensity * 130).toFixed(0)})`
+          return (
+            <rect
+              key={cell.date}
+              x={cell.col * (cellSize + gap)}
+              y={cell.row * (cellSize + gap)}
+              width={cellSize}
+              height={cellSize}
+              rx={2}
+              fill={fill}
+              stroke="var(--color-border)"
+              strokeWidth={0.5}
+              onMouseEnter={() =>
+                onHover(cell.entry ?? { date: cell.date, rest: true })
+              }
+            >
+              <title>
+                {cell.date}
+                {cell.entry
+                  ? `\n${cell.entry.activity_count} activity · load ${cell.entry.total_load.toFixed(0)} · ${cell.entry.dominant_type ?? ''}`
+                  : '\nrest day'}
+              </title>
+            </rect>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
+function HeatmapFooter({
+  hover, data,
+}: {
+  hover: ActivityHeatmapDay | { date: string; rest: true } | null
+  data: ActivityHeatmapDay[]
+}) {
+  const totals = useMemo(() => {
+    const days = data.length
+    const totalLoad = data.reduce((s, d) => s + d.total_load, 0)
+    const totalActivities = data.reduce((s, d) => s + d.activity_count, 0)
+    return { days, totalLoad, totalActivities }
+  }, [data])
+
+  return (
+    <div className="flex items-center justify-between text-xs text-muted gap-4 flex-wrap">
+      <div className="tabular-nums">
+        {hover
+          ? hover && 'rest' in hover
+            ? `${fmtDate(hover.date)} · rest`
+            : `${fmtDate(hover.date)} · ${hover.activity_count} activity · load ${hover.total_load.toFixed(0)} · ${hover.dominant_type}`
+          : `${totals.totalActivities} activities across ${totals.days} active days · cumulative load ${totals.totalLoad.toFixed(0)}`}
+      </div>
+      <ScaleLegend />
+    </div>
+  )
+}
+
+function ScaleLegend() {
+  return (
+    <div className="inline-flex items-center gap-1.5 text-[10px] text-faint">
+      <span>less</span>
+      {[0, 0.25, 0.5, 0.75, 1].map((t) => (
+        <span
+          key={t}
+          className="size-3 rounded-sm border border-border"
+          style={{
+            background: t === 0
+              ? 'var(--color-surface-2)'
+              : `oklch(${(0.32 + t * 0.42).toFixed(3)} ${(0.05 + t * 0.18).toFixed(3)} ${(155 - t * 130).toFixed(0)})`,
+          }}
+        />
+      ))}
+      <span>more</span>
+    </div>
+  )
+}
+
+// =====================================================================
+// Pace efficiency — HR-per-kmh trend with TSB overlay
+// =====================================================================
+
+const PACE_RANGES = [
+  { label: '90d', days: 90 },
+  { label: '6mo', days: 180 },
+  { label: '1y', days: 365 },
+  { label: '2y', days: 730 },
+] as const
+
+function PaceEfficiencyPanel() {
+  const [days, setDays] = useState<number>(180)
+  const [runs, setRuns] = useState<PaceEfficiencyRun[] | null>(null)
+
+  useEffect(() => {
+    setRuns(null)
+    api.paceEfficiency(days, 2).then((r) => setRuns(r.values))
+  }, [days])
+
+  // Rolling 5-run average of hr_per_kmh — smooths noise so the trend is
+  // visible without losing per-run dots. TSB stays on its own axis.
+  const smoothed = useMemo(() => {
+    if (!runs) return null
+    const out: { date: string; hr_per_kmh: number; rolling: number | null; tsb: number | null }[] = []
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i]
+      if (r.hr_per_kmh == null) continue
+      const window = runs.slice(Math.max(0, i - 4), i + 1)
+        .map((x) => x.hr_per_kmh)
+        .filter((v): v is number => v != null)
+      const rolling = window.length >= 3
+        ? window.reduce((s, v) => s + v, 0) / window.length
+        : null
+      out.push({
+        date: r.date,
+        hr_per_kmh: r.hr_per_kmh,
+        rolling,
+        tsb: r.tsb,
+      })
+    }
+    return out
+  }, [runs])
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-end justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle>Pace efficiency &amp; fatigue</CardTitle>
+            <p className="text-[11px] text-faint mt-1">
+              HR per km/h on each run. Rising line = more cardiovascular cost for
+              the same speed (fatigue / detraining). TSB overlay shows whether
+              the rise tracks intentional load.
+            </p>
+          </div>
+          <RangeToggle
+            options={PACE_RANGES.map((r) => ({ label: r.label, value: r.days }))}
+            value={days}
+            onChange={setDays}
+          />
+        </div>
+      </CardHeader>
+      <CardBody>
+        <div className="h-80">
+          {smoothed == null ? (
+            <ChartLoading />
+          ) : smoothed.length === 0 ? (
+            <EmptyState>
+              No runs in this window with both HR and pace recorded.
+            </EmptyState>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={smoothed} margin={{ top: 8, right: 24, left: 8, bottom: 0 }}>
+                <CartesianGrid stroke="var(--color-border)" strokeDasharray="2 4" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
+                  tickFormatter={fmtDateShort}
+                  axisLine={{ stroke: 'var(--color-border)' }}
+                  tickLine={false}
+                  minTickGap={50}
+                />
+                <YAxis
+                  yAxisId="hr"
+                  tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={36}
+                  domain={['auto', 'auto']}
+                />
+                <YAxis
+                  yAxisId="tsb"
+                  orientation="right"
+                  tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={32}
+                  domain={['auto', 'auto']}
+                />
+                <Tooltip content={<PaceTooltip />} />
+                <ReferenceLine yAxisId="tsb" y={0} stroke="var(--color-border)" />
+                {/* per-run dots */}
+                <Line
+                  yAxisId="hr"
+                  dataKey="hr_per_kmh"
+                  stroke="oklch(0.78 0.16 28)"
+                  strokeWidth={0}
+                  dot={{ r: 2.5, fill: 'oklch(0.78 0.16 28)', strokeWidth: 0 }}
+                  name="Per-run HR/km·h"
+                  isAnimationActive={false}
+                />
+                {/* rolling smoother */}
+                <Line
+                  yAxisId="hr"
+                  dataKey="rolling"
+                  stroke="oklch(0.78 0.16 28)"
+                  strokeWidth={2}
+                  dot={false}
+                  type="monotone"
+                  name="5-run rolling"
+                  isAnimationActive={false}
+                />
+                {/* TSB on right axis */}
+                <Line
+                  yAxisId="tsb"
+                  dataKey="tsb"
+                  stroke="oklch(0.78 0.16 158)"
+                  strokeWidth={1.6}
+                  strokeDasharray="3 3"
+                  dot={false}
+                  type="monotone"
+                  name="TSB"
+                  isAnimationActive={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+        <div className="flex gap-4 text-[11px] text-muted mt-3">
+          <Legend color="oklch(0.78 0.16 28)" label="HR per km/h (lower is better)" />
+          <Legend color="oklch(0.78 0.16 158)" label="TSB — negative = accumulated fatigue" />
+        </div>
+      </CardBody>
+    </Card>
+  )
+}
+
+function PaceTooltip({
+  active, payload, label,
+}: {
+  active?: boolean
+  payload?: { name: string; value: number; color: string; dataKey: string }[]
+  label?: string
+}) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs shadow-elev tabular-nums">
+      <div className="text-muted mb-1">{label && fmtDateShort(label)}</div>
+      {payload.map((p) => (
+        <div key={p.dataKey} className="flex items-center gap-2">
+          <span className="size-2 rounded-full" style={{ background: p.color }} />
+          <span className="text-muted">{p.name}:</span>
+          <span className="text-text font-medium">
+            {p.value == null ? '—' : p.value.toFixed(2)}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// =====================================================================
+// Strength tracker — weekly session count + total load
+// =====================================================================
+
+const STRENGTH_RANGES = [
+  { label: '1y', weeks: 52 },
+  { label: '2y', weeks: 104 },
+  { label: '5y', weeks: 260 },
+] as const
+
+function StrengthTrackerPanel() {
+  const [weeks, setWeeks] = useState<number>(104)
+  const [resp, setResp] = useState<{
+    values: StrengthVolumeWeek[]
+    last_session_date: string | null
+    total_sessions: number
+  } | null>(null)
+
+  useEffect(() => {
+    setResp(null)
+    api.strengthVolume(weeks).then((r) => setResp({
+      values: r.values,
+      last_session_date: r.last_session_date,
+      total_sessions: r.total_sessions,
+    }))
+  }, [weeks])
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-end justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle>Strength volume</CardTitle>
+            <p className="text-[11px] text-faint mt-1">
+              Weekly count of strength-tagged sessions. Instinct Solar doesn't
+              record sets/reps/weight, so this tracks frequency + duration only.
+            </p>
+          </div>
+          <RangeToggle
+            options={STRENGTH_RANGES.map((r) => ({ label: r.label, value: r.weeks }))}
+            value={weeks}
+            onChange={setWeeks}
+          />
+        </div>
+      </CardHeader>
+      <CardBody>
+        {resp == null ? (
+          <ChartLoading />
+        ) : resp.total_sessions === 0 ? (
+          <EmptyState>
+            No strength sessions recorded in this window. Log them on your
+            watch as a "Strength" activity to start populating this view.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={resp.values} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="var(--color-border)" strokeDasharray="2 4" vertical={false} />
+                  <XAxis
+                    dataKey="week_start"
+                    tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
+                    tickFormatter={fmtDateShort}
+                    axisLine={{ stroke: 'var(--color-border)' }}
+                    tickLine={false}
+                    minTickGap={40}
+                  />
+                  <YAxis
+                    tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={28}
+                    allowDecimals={false}
+                  />
+                  <Tooltip content={<StrengthTooltip />} />
+                  <Bar
+                    dataKey="sessions"
+                    fill="oklch(0.65 0.16 280)"
+                    radius={[3, 3, 0, 0]}
+                    isAnimationActive={false}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex justify-between text-xs text-muted mt-3 tabular-nums">
+              <div>{resp.total_sessions} session{resp.total_sessions === 1 ? '' : 's'} total</div>
+              <div>
+                Last: {resp.last_session_date ? fmtDate(resp.last_session_date) : '—'}
+              </div>
+            </div>
+          </>
+        )}
+      </CardBody>
+    </Card>
+  )
+}
+
+function StrengthTooltip({
+  active, payload, label,
+}: {
+  active?: boolean
+  payload?: { payload: StrengthVolumeWeek }[]
+  label?: string
+}) {
+  if (!active || !payload?.length) return null
+  const w = payload[0].payload
+  return (
+    <div className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs shadow-elev tabular-nums">
+      <div className="text-muted mb-1">Week of {label && fmtDateShort(label)}</div>
+      <div className="flex items-center gap-2">
+        <span className="text-muted">sessions:</span>
+        <span className="text-text font-medium">{w.sessions}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-muted">duration:</span>
+        <span className="text-text font-medium">{w.total_duration_min.toFixed(0)} min</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-muted">calories:</span>
+        <span className="text-text font-medium">{w.total_calories}</span>
+      </div>
+    </div>
+  )
+}
+
+// =====================================================================
+// Shared bits
+// =====================================================================
+
+function RangeToggle<T extends number>({
+  options, value, onChange,
+}: {
+  options: { label: string; value: T }[]
+  value: T
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="flex bg-surface border border-border rounded-full p-0.5 text-xs">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={
+            'px-3 py-1.5 rounded-full transition-colors ' +
+            (value === opt.value
+              ? 'bg-accent text-bg'
+              : 'text-muted hover:text-text')
+          }
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function ChartLoading() {
+  return (
+    <div className="h-64 flex items-center justify-center">
+      <Loader2 className="size-4 text-muted animate-spin" />
+    </div>
+  )
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="h-40 flex items-center justify-center text-sm text-muted text-center px-6">
+      {children}
+    </div>
+  )
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="size-2 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
+  )
+}
+

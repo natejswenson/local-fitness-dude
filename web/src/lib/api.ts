@@ -1,6 +1,8 @@
 import type {
-  BriefResponse, BriefStreamEvent, ChatEvent, MetricSeries, SyncState,
-  SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
+  ActivityHeatmapResponse, BriefResponse, BriefStreamEvent, ChatEvent,
+  MetricSeries, PaceEfficiencyResponse, StrengthVolumeResponse,
+  SyncState, SyncTriggerResponse, TodayResponse, TrainingLoadSeries,
+  Workout,
 } from './types'
 
 // --- Auth token ---------------------------------------------------------
@@ -99,6 +101,14 @@ export const api = {
     if (opts.limit) p.set('limit', String(opts.limit))
     return getJson<{ workouts: Workout[] }>(`/api/workouts?${p}`)
   },
+  activityHeatmap: (days = 365) =>
+    getJson<ActivityHeatmapResponse>(`/api/activity-heatmap?days=${days}`),
+  strengthVolume: (weeks = 104) =>
+    getJson<StrengthVolumeResponse>(`/api/strength-volume?weeks=${weeks}`),
+  paceEfficiency: (days = 180, minDistanceKm = 2) =>
+    getJson<PaceEfficiencyResponse>(
+      `/api/pace-efficiency?days=${days}&min_distance_km=${minDistanceKm}`,
+    ),
   brief: () => getJson<BriefResponse>('/api/brief'),
   briefGenerate: async (model: string) => {
     const r = await authedFetch('/api/brief/generate', {

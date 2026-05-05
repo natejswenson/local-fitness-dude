@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom'
-import { Activity, Sparkles } from 'lucide-react'
+import { Activity, LayoutGrid, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const items = [
   { to: '/', label: 'Today', icon: Sparkles, end: true },
   { to: '/trends', label: 'Trends', icon: Activity, end: false },
+  { to: '/dashboards', label: 'Dashboards', icon: LayoutGrid, end: false },
 ]
 
 function BrandMark({ size = 'md' }: { size?: 'sm' | 'md' }) {
