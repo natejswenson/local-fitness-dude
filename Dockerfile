@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ----- Stage 1: build the React SPA -------------------------------------
-FROM node:20-alpine AS web-builder
+FROM node:25-alpine AS web-builder
 WORKDIR /web
 
 # Use pnpm via corepack (matches the host workflow).
