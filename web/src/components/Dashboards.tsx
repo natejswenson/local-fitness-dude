@@ -3,21 +3,33 @@ import {
   Bar, BarChart, CartesianGrid, ComposedChart, Line, ReferenceLine,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { Loader2 } from 'lucide-react'
+import { Loader2, MessageSquare } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
+import { ChatPanel } from './ChatPanel'
 import { fmtDate, fmtDateShort } from '@/lib/utils'
 import type {
   ActivityHeatmapDay, PaceEfficiencyRun, StrengthVolumeWeek,
 } from '@/lib/types'
 
+type SeedRequest = { text: string; nonce: number }
+type AskHandler = (text: string) => void
+
 /**
- * Custom dashboards page. Three views, all hitting the new
- * /api/activity-heatmap, /api/strength-volume, and /api/pace-efficiency
- * endpoints. Loosely modeled on Trends — same Card/RangeToggle pattern,
- * same Recharts-with-CSS-vars approach for theming.
+ * Custom dashboards page. Three views (activity heatmap, pace
+ * efficiency, strength volume), each with embedded chat seeding so
+ * the user can ask the agent for insights about what they're looking
+ * at without leaving the page. The single ChatPanel at the bottom
+ * accepts seed prompts from any of the three panels — bumping the
+ * nonce re-fires the seed even if the text is identical.
  */
 export function Dashboards() {
+  const [seedRequest, setSeedRequest] = useState<SeedRequest | null>(null)
+
+  function onAsk(text: string) {
+    setSeedRequest((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }))
+  }
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
@@ -26,12 +38,54 @@ export function Dashboards() {
           <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Dashboards</h1>
         </header>
 
-        <ActivityHeatmapPanel />
-        <PaceEfficiencyPanel />
-        <StrengthTrackerPanel />
+        <ActivityHeatmapPanel onAsk={onAsk} />
+        <PaceEfficiencyPanel onAsk={onAsk} />
+        <StrengthTrackerPanel onAsk={onAsk} />
+
+        <div className="border-t border-border my-2" />
+
+        <ChatPanel seedRequest={seedRequest} />
       </div>
     </div>
   )
+}
+
+/**
+ * Tail strip rendered under each dashboard panel. Renders a short
+ * "Ask the agent" row plus 2-3 context-aware question chips that seed
+ * the page-level ChatPanel when clicked. The seed text always
+ * mentions the active time window so the agent queries the right
+ * slice without a follow-up.
+ */
+function AskBar({
+  prompts, onAsk,
+}: {
+  prompts: { label: string; seed: string }[]
+  onAsk: AskHandler
+}) {
+  return (
+    <div className="mt-4 pt-3 border-t border-border/60 flex flex-wrap items-center gap-2">
+      <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted">
+        <MessageSquare className="size-3 text-accent" />
+        Ask the agent
+      </span>
+      {prompts.map((p) => (
+        <button
+          key={p.label}
+          onClick={() => onAsk(p.seed)}
+          className="text-[12px] px-2.5 py-1 rounded-full border border-border text-muted hover:text-text hover:border-accent-dim hover:bg-surface transition-colors"
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function rangeLabel(days: number): string {
+  if (days >= 365) return `${Math.round(days / 365)} year${days >= 730 ? 's' : ''}`
+  if (days >= 30) return `${Math.round(days / 30)} months`
+  return `${days} days`
 }
 
 // =====================================================================
@@ -45,7 +99,7 @@ const HEATMAP_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function ActivityHeatmapPanel() {
+function ActivityHeatmapPanel({ onAsk }: { onAsk: AskHandler }) {
   const [days, setDays] = useState<number>(365)
   const [data, setData] = useState<ActivityHeatmapDay[] | null>(null)
   const [hover, setHover] = useState<ActivityHeatmapDay | { date: string; rest: true } | null>(null)
@@ -54,6 +108,22 @@ function ActivityHeatmapPanel() {
     setData(null)
     api.activityHeatmap(days).then((r) => setData(r.values))
   }, [days])
+
+  const range = rangeLabel(days)
+  const heatmapPrompts = [
+    {
+      label: 'Spot overload weeks',
+      seed: `Look at my activity heatmap for the last ${range}. Identify weeks where I overloaded — too many high-load days in a row without recovery — and compare them to weeks where I balanced load and rest well. What pattern should I aim for?`,
+    },
+    {
+      label: 'Consistency vs spikes',
+      seed: `Across the last ${range}, am I building up gradually or spiking? Highlight any sharp jumps in weekly load and whether they coincide with poor recovery markers (RHR, sleep, body battery).`,
+    },
+    {
+      label: 'Days I should have rested',
+      seed: `In the last ${range}, find days I trained hard when my recovery markers (RHR vs baseline, sleep score, body battery) suggested I should have rested. Be specific with dates.`,
+    },
+  ]
 
   return (
     <Card>
@@ -74,6 +144,7 @@ function ActivityHeatmapPanel() {
           <div className="space-y-3">
             <HeatmapGrid days={days} data={data} onHover={setHover} />
             <HeatmapFooter hover={hover} data={data} />
+            <AskBar prompts={heatmapPrompts} onAsk={onAsk} />
           </div>
         )}
       </CardBody>
@@ -245,7 +316,7 @@ const PACE_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function PaceEfficiencyPanel() {
+function PaceEfficiencyPanel({ onAsk }: { onAsk: AskHandler }) {
   const [days, setDays] = useState<number>(180)
   const [runs, setRuns] = useState<PaceEfficiencyRun[] | null>(null)
 
@@ -253,6 +324,26 @@ function PaceEfficiencyPanel() {
     setRuns(null)
     api.paceEfficiency(days, 2).then((r) => setRuns(r.values))
   }, [days])
+
+  const range = rangeLabel(days)
+  const pacePrompts = [
+    {
+      label: 'Read the trend',
+      seed: `Walk me through my pace efficiency (HR per km/h) trend over the last ${range}. Is it improving or worsening? Cite the specific runs and the rolling-average shape.`,
+    },
+    {
+      label: 'Fatigue signals',
+      seed: `In the last ${range}, identify runs where my HR was disproportionately high relative to pace — the divergence-from-baseline runs. Cross-check with TSB on those dates: when negative, was the high HR/pace expected, or genuine fatigue?`,
+    },
+    {
+      label: 'Detraining vs fitness',
+      seed: `Looking at HR/pace efficiency over the last ${range} alongside CTL: am I gaining fitness, holding, or losing it? Distinguish between brief fatigue dips and a real downward trend.`,
+    },
+    {
+      label: 'Best efficiency runs',
+      seed: `What were my 5 most efficient runs (lowest HR per km/h) in the last ${range}? What did the recovery context look like in the days before each?`,
+    },
+  ]
 
   // Rolling 5-run average of hr_per_kmh — smooths noise so the trend is
   // visible without losing per-run dots. TSB stays on its own axis.
@@ -377,6 +468,7 @@ function PaceEfficiencyPanel() {
           <Legend color="oklch(0.78 0.16 28)" label="HR per km/h (lower is better)" />
           <Legend color="oklch(0.78 0.16 158)" label="TSB — negative = accumulated fatigue" />
         </div>
+        <AskBar prompts={pacePrompts} onAsk={onAsk} />
       </CardBody>
     </Card>
   )
@@ -416,7 +508,7 @@ const STRENGTH_RANGES = [
   { label: '5y', weeks: 260 },
 ] as const
 
-function StrengthTrackerPanel() {
+function StrengthTrackerPanel({ onAsk }: { onAsk: AskHandler }) {
   const [weeks, setWeeks] = useState<number>(104)
   const [resp, setResp] = useState<{
     values: StrengthVolumeWeek[]
@@ -432,6 +524,22 @@ function StrengthTrackerPanel() {
       total_sessions: r.total_sessions,
     }))
   }, [weeks])
+
+  const range = `${weeks} weeks`
+  const strengthPrompts = [
+    {
+      label: 'Why so little strength?',
+      seed: `My strength training has fallen off — last logged ${resp?.last_session_date ?? 'a long time ago'}. Walk me through whether this is hurting my running performance and recovery, and what the minimum viable strength routine would be for someone with my running load.`,
+    },
+    {
+      label: 'Complement my running',
+      seed: `Given my recent running volume and the lack of strength sessions in the last ${range}, what 2-3 specific strength movements (lifts, plyometrics, mobility) would most directly improve my running and reduce injury risk? Be concrete — sets, reps, weight if applicable, and frequency.`,
+    },
+    {
+      label: 'Restart plan',
+      seed: `Build me a 4-week ramp to restart strength training without compromising my current running schedule. Account for my CTL/ATL trajectory and recommend specific session days based on my typical running pattern.`,
+    },
+  ]
 
   return (
     <Card>
@@ -498,6 +606,7 @@ function StrengthTrackerPanel() {
             </div>
           </>
         )}
+        <AskBar prompts={strengthPrompts} onAsk={onAsk} />
       </CardBody>
     </Card>
   )
