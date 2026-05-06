@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Brief, Takeaway, Workout } from '@/lib/types'
+import { ActivityHeatmap } from './ActivityHeatmap'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
 import { SyncIndicator } from './SyncIndicator'
@@ -127,6 +128,24 @@ export function Today() {
             <span className="text-xs font-medium underline-offset-2 hover:underline shrink-0">Regenerate</span>
           </button>
         )}
+
+        {/* Year-at-a-glance heatmap. Sets the visual frame above the
+            takeaways — today's cell is ringed in accent so the eye
+            instantly maps "where we are right now" against the year.
+            Hover any cell for the same rich tooltip the Dashboards page
+            ships; for chat-driven analysis go to /dashboards. */}
+        <Card>
+          <div className="px-5 pt-4 pb-1 flex items-end justify-between gap-3">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wider text-muted">
+                Year at a glance
+              </div>
+            </div>
+          </div>
+          <CardBody>
+            <ActivityHeatmap days={365} highlightToday />
+          </CardBody>
+        </Card>
 
         {/* Key Takeaways — multi-column on lg+ to use horizontal space and
             keep the brief above-the-fold. Each card is compact by default
