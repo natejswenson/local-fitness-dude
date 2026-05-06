@@ -427,30 +427,68 @@ async def api_workout(activity_id: int) -> dict:
 
 @app.get("/api/activity-heatmap")
 async def api_activity_heatmap(days: int = Query(365, ge=7, le=2000)) -> dict:
-    """Per-day training-load aggregate for a calendar heatmap.
+    """Per-day data for a calendar heatmap, enriched with the recovery +
+    training-load context that informs the cell color.
 
-    Returns rows ONLY for days with at least one activity — the frontend
-    fills the full N-day grid and treats missing dates as rest days.
-    `dominant_type` is whichever type appears most often that day.
+    Spine is the activity day-aggregate (one row per day with at least
+    one activity). Each row carries:
+      - activity_count, total_load, total_duration_seconds, dominant_type
+      - activities[]   — per-activity rows for that date (small, capped)
+      - wellness        — daily_metrics fields the tooltip surfaces
+      - baseline        — 60-day means for delta-from-baseline color cues
+      - load_state      — CTL/ATL/TSB on that date (Banister)
+
+    The frontend fills missing dates as rest days; for those it can fetch
+    `/api/activity-heatmap-day/{date}` to lazy-load wellness + baselines
+    on hover. Bundling everything for ACTIVE days keeps the common path
+    fast (≈150 KB for a 2y window) while keeping rest-day hovers cheap.
     """
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
-        # Top-level aggregate per day.
         rows = [dict(r) for r in conn.execute(
             """
-            SELECT date,
+            SELECT a.date,
                    COUNT(*) AS activity_count,
-                   COALESCE(SUM(training_load), 0) AS total_load,
-                   COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
-            FROM activities
-            WHERE date >= ?
-            GROUP BY date
-            ORDER BY date
+                   COALESCE(SUM(a.training_load), 0) AS total_load,
+                   COALESCE(SUM(a.duration_seconds), 0) AS total_duration_seconds,
+                   dm.rhr AS dm_rhr,
+                   dm.sleep_seconds AS dm_sleep_seconds,
+                   dm.sleep_score AS dm_sleep_score,
+                   dm.body_battery_max AS dm_body_battery_max,
+                   dm.body_battery_min AS dm_body_battery_min,
+                   dm.avg_stress AS dm_avg_stress,
+                   dm.steps AS dm_steps,
+                   b.rhr_60day_mean AS b_rhr_60d,
+                   b.sleep_seconds_60day_mean AS b_sleep_60d,
+                   b.body_battery_max_60day_mean AS b_bb_max_60d,
+                   b.stress_60day_mean AS b_stress_60d,
+                   b.ctl AS b_ctl,
+                   b.atl AS b_atl,
+                   b.tsb AS b_tsb
+            FROM activities a
+            LEFT JOIN daily_metrics dm ON dm.date = a.date
+            LEFT JOIN baselines b ON b.date = a.date
+            WHERE a.date >= ?
+            GROUP BY a.date
+            ORDER BY a.date
             """,
             (cutoff,),
         ).fetchall()]
-        # Dominant type per day — separate query so we don't fight SQLite's
-        # GROUP BY semantics with a window function.
+        # Per-activity detail for each active day (tooltip lists them).
+        # 5-per-day cap so a freak day doesn't bloat the response.
+        activity_rows = conn.execute(
+            """
+            SELECT activity_id, date, activity_type, activity_name,
+                   duration_seconds, distance_meters, training_load,
+                   avg_hr, max_hr, avg_pace_sec_per_km
+            FROM activities
+            WHERE date >= ?
+            ORDER BY date, start_time
+            """,
+            (cutoff,),
+        ).fetchall()
+        # Dominant type per day (most rows) — separate query to keep the
+        # main aggregate clean.
         type_rows = conn.execute(
             """
             SELECT date, activity_type, COUNT(*) AS n
@@ -461,16 +499,124 @@ async def api_activity_heatmap(days: int = Query(365, ge=7, le=2000)) -> dict:
             """,
             (cutoff,),
         ).fetchall()
+
+    activities_by_date: dict[str, list[dict]] = {}
+    for ar in activity_rows:
+        d = ar["date"]
+        bucket = activities_by_date.setdefault(d, [])
+        if len(bucket) < 5:
+            bucket.append({
+                "activity_id": ar["activity_id"],
+                "type": ar["activity_type"],
+                "name": ar["activity_name"],
+                "duration_seconds": ar["duration_seconds"],
+                "distance_meters": ar["distance_meters"],
+                "training_load": ar["training_load"],
+                "avg_hr": ar["avg_hr"],
+                "max_hr": ar["max_hr"],
+                "avg_pace_sec_per_km": ar["avg_pace_sec_per_km"],
+            })
+
     dominant_by_date: dict[str, str] = {}
     for tr in type_rows:
         dominant_by_date.setdefault(tr["date"], tr["activity_type"])
-    for row in rows:
-        row["dominant_type"] = dominant_by_date.get(row["date"])
+
+    enriched: list[dict] = []
+    for r in rows:
+        d = r["date"]
+        enriched.append({
+            "date": d,
+            "activity_count": r["activity_count"],
+            "total_load": r["total_load"],
+            "total_duration_seconds": r["total_duration_seconds"],
+            "dominant_type": dominant_by_date.get(d),
+            "activities": activities_by_date.get(d, []),
+            "wellness": {
+                "rhr": r["dm_rhr"],
+                "sleep_seconds": r["dm_sleep_seconds"],
+                "sleep_score": r["dm_sleep_score"],
+                "body_battery_max": r["dm_body_battery_max"],
+                "body_battery_min": r["dm_body_battery_min"],
+                "avg_stress": r["dm_avg_stress"],
+                "steps": r["dm_steps"],
+            },
+            "baseline": {
+                "rhr_60d": r["b_rhr_60d"],
+                "sleep_seconds_60d": r["b_sleep_60d"],
+                "body_battery_max_60d": r["b_bb_max_60d"],
+                "stress_60d": r["b_stress_60d"],
+            },
+            "load_state": {
+                "ctl": r["b_ctl"],
+                "atl": r["b_atl"],
+                "tsb": r["b_tsb"],
+            },
+        })
+
     return {
         "days": days,
         "start_date": cutoff,
         "end_date": date.today().isoformat(),
-        "values": rows,
+        "values": enriched,
+    }
+
+
+@app.get("/api/activity-heatmap-day/{day}")
+async def api_activity_heatmap_day(day: str) -> dict:
+    """Wellness + baseline + load-state for a single rest day.
+
+    Used by the heatmap tooltip when the user hovers a day with no
+    activity (those days aren't in the main /api/activity-heatmap
+    payload). Cheap, single-row LEFT JOIN; cached per-date by the
+    frontend so repeated hovers don't re-fetch.
+    """
+    # Validate the date format up front — SQLite would happily accept
+    # garbage and return nothing, but that hides bad input from the UI.
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(400, "date must be ISO YYYY-MM-DD")
+    with db.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT dm.rhr, dm.sleep_seconds, dm.sleep_score,
+                   dm.body_battery_max, dm.body_battery_min,
+                   dm.avg_stress, dm.steps,
+                   b.rhr_60day_mean        AS rhr_60d,
+                   b.sleep_seconds_60day_mean AS sleep_seconds_60d,
+                   b.body_battery_max_60day_mean AS body_battery_max_60d,
+                   b.stress_60day_mean     AS stress_60d,
+                   b.ctl, b.atl, b.tsb
+            FROM daily_metrics dm
+            LEFT JOIN baselines b ON b.date = dm.date
+            WHERE dm.date = ?
+            """,
+            (day,),
+        ).fetchone()
+    if not row:
+        return {"date": day, "wellness": None, "baseline": None, "load_state": None}
+    return {
+        "date": day,
+        "wellness": {
+            "rhr": row["rhr"],
+            "sleep_seconds": row["sleep_seconds"],
+            "sleep_score": row["sleep_score"],
+            "body_battery_max": row["body_battery_max"],
+            "body_battery_min": row["body_battery_min"],
+            "avg_stress": row["avg_stress"],
+            "steps": row["steps"],
+        },
+        "baseline": {
+            "rhr_60d": row["rhr_60d"],
+            "sleep_seconds_60d": row["sleep_seconds_60d"],
+            "body_battery_max_60d": row["body_battery_max_60d"],
+            "stress_60d": row["stress_60d"],
+        },
+        "load_state": {
+            "ctl": row["ctl"],
+            "atl": row["atl"],
+            "tsb": row["tsb"],
+        },
     }
 
 

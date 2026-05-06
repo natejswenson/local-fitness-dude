@@ -143,12 +143,51 @@ export type SyncTriggerResponse = {
 
 // ---- Custom dashboards ----
 
+export type HeatmapWellness = {
+  rhr: number | null
+  sleep_seconds: number | null
+  sleep_score: number | null
+  body_battery_max: number | null
+  body_battery_min: number | null
+  avg_stress: number | null
+  steps: number | null
+}
+
+export type HeatmapBaseline = {
+  rhr_60d: number | null
+  sleep_seconds_60d: number | null
+  body_battery_max_60d: number | null
+  stress_60d: number | null
+}
+
+export type HeatmapLoadState = {
+  ctl: number | null
+  atl: number | null
+  tsb: number | null
+}
+
+export type HeatmapActivity = {
+  activity_id: number
+  type: string
+  name: string
+  duration_seconds: number | null
+  distance_meters: number | null
+  training_load: number | null
+  avg_hr: number | null
+  max_hr: number | null
+  avg_pace_sec_per_km: number | null
+}
+
 export type ActivityHeatmapDay = {
   date: string
   activity_count: number
   total_load: number
   total_duration_seconds: number
   dominant_type: string | null
+  activities: HeatmapActivity[]
+  wellness: HeatmapWellness
+  baseline: HeatmapBaseline
+  load_state: HeatmapLoadState
 }
 
 export type ActivityHeatmapResponse = {
@@ -156,6 +195,13 @@ export type ActivityHeatmapResponse = {
   start_date: string
   end_date: string
   values: ActivityHeatmapDay[]
+}
+
+export type ActivityHeatmapDayResponse = {
+  date: string
+  wellness: HeatmapWellness | null
+  baseline: HeatmapBaseline | null
+  load_state: HeatmapLoadState | null
 }
 
 export type StrengthVolumeWeek = {

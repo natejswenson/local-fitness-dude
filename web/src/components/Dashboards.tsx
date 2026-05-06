@@ -7,6 +7,7 @@ import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
 import { DashboardInsight, type Prompt } from './DashboardInsight'
+import { HeatmapDayTooltip, type HoverTarget } from './HeatmapDayTooltip'
 import { fmtDate, fmtDateShort } from '@/lib/utils'
 import type {
   ActivityHeatmapDay, PaceEfficiencyRun, StrengthVolumeWeek,
@@ -94,7 +95,7 @@ const HEATMAP_RANGES = [
 function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: Model }) {
   const [days, setDays] = useState<number>(365)
   const [data, setData] = useState<ActivityHeatmapDay[] | null>(null)
-  const [hover, setHover] = useState<ActivityHeatmapDay | { date: string; rest: true } | null>(null)
+  const [hover, setHover] = useState<HoverTarget | null>(null)
 
   useEffect(() => {
     setData(null)
@@ -135,7 +136,8 @@ function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: 
         ) : (
           <div className="space-y-3">
             <HeatmapGrid days={days} data={data} onHover={setHover} />
-            <HeatmapFooter hover={hover} data={data} />
+            <HeatmapTotals data={data} />
+            <HeatmapDayTooltip target={hover} />
             <DashboardInsight
               prompts={heatmapPrompts}
               sessionId={sessionId}
@@ -160,7 +162,7 @@ function HeatmapGrid({
 }: {
   days: number
   data: ActivityHeatmapDay[]
-  onHover: (d: ActivityHeatmapDay | { date: string; rest: true } | null) => void
+  onHover: (target: HoverTarget | null) => void
 }) {
   // Build the cell grid. Rows = day of week (0=Sun…6=Sat), cols = weeks.
   // Anchor on today (rightmost column) and walk back N days so the grid
@@ -237,17 +239,16 @@ function HeatmapGrid({
               fill={fill}
               stroke="var(--color-border)"
               strokeWidth={0.5}
-              onMouseEnter={() =>
-                onHover(cell.entry ?? { date: cell.date, rest: true })
-              }
-            >
-              <title>
-                {cell.date}
-                {cell.entry
-                  ? `\n${cell.entry.activity_count} activity · load ${cell.entry.total_load.toFixed(0)} · ${cell.entry.dominant_type ?? ''}`
-                  : '\nrest day'}
-              </title>
-            </rect>
+              className="cursor-default hover:stroke-accent-dim"
+              onMouseEnter={(e) => {
+                const rect = (e.target as SVGRectElement).getBoundingClientRect()
+                onHover(
+                  cell.entry
+                    ? { kind: 'active', day: cell.entry, rect }
+                    : { kind: 'rest', date: cell.date, rect },
+                )
+              }}
+            />
           )
         })}
       </svg>
@@ -255,12 +256,7 @@ function HeatmapGrid({
   )
 }
 
-function HeatmapFooter({
-  hover, data,
-}: {
-  hover: ActivityHeatmapDay | { date: string; rest: true } | null
-  data: ActivityHeatmapDay[]
-}) {
+function HeatmapTotals({ data }: { data: ActivityHeatmapDay[] }) {
   const totals = useMemo(() => {
     const days = data.length
     const totalLoad = data.reduce((s, d) => s + d.total_load, 0)
@@ -271,11 +267,8 @@ function HeatmapFooter({
   return (
     <div className="flex items-center justify-between text-xs text-muted gap-4 flex-wrap">
       <div className="tabular-nums">
-        {hover
-          ? hover && 'rest' in hover
-            ? `${fmtDate(hover.date)} · rest`
-            : `${fmtDate(hover.date)} · ${hover.activity_count} activity · load ${hover.total_load.toFixed(0)} · ${hover.dominant_type}`
-          : `${totals.totalActivities} activities across ${totals.days} active days · cumulative load ${totals.totalLoad.toFixed(0)}`}
+        {totals.totalActivities} activities across {totals.days} active days · cumulative load {totals.totalLoad.toFixed(0)}
+        <span className="text-faint ml-2">· hover any day for full stats</span>
       </div>
       <ScaleLegend />
     </div>
