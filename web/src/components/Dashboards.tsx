@@ -3,79 +3,71 @@ import {
   Bar, BarChart, CartesianGrid, ComposedChart, Line, ReferenceLine,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { Loader2, MessageSquare } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
-import { ChatPanel } from './ChatPanel'
+import { DashboardInsight, type Prompt } from './DashboardInsight'
 import { fmtDate, fmtDateShort } from '@/lib/utils'
 import type {
   ActivityHeatmapDay, PaceEfficiencyRun, StrengthVolumeWeek,
 } from '@/lib/types'
 
-type SeedRequest = { text: string; nonce: number }
-type AskHandler = (text: string) => void
+type Model = 'sonnet' | 'opus'
 
 /**
- * Custom dashboards page. Three views (activity heatmap, pace
- * efficiency, strength volume), each with embedded chat seeding so
- * the user can ask the agent for insights about what they're looking
- * at without leaving the page. The single ChatPanel at the bottom
- * accepts seed prompts from any of the three panels — bumping the
- * nonce re-fires the seed even if the text is identical.
+ * Custom dashboards page. Each view has an inline `<DashboardInsight />`
+ * that streams the agent's answer directly under the chart that
+ * prompted the question — no page-level chat panel, no scroll dance.
+ * Session is shared across the three panels so context carries when
+ * the user moves between them.
  */
 export function Dashboards() {
-  const [seedRequest, setSeedRequest] = useState<SeedRequest | null>(null)
+  // One session for all three insights so the agent has continuity
+  // when the user pivots between views. Generated once per page mount.
+  const [sessionId] = useState(() => crypto.randomUUID())
+  const [model, setModel] = useState<Model>('sonnet')
 
-  function onAsk(text: string) {
-    setSeedRequest((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }))
-  }
+  // Tear down the chat session when the user leaves the page so the
+  // server can release its agent client.
+  useEffect(() => {
+    return () => {
+      api.chatEnd(sessionId).catch(() => {})
+    }
+  }, [sessionId])
 
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        <header>
-          <div className="text-sm text-muted">Custom views</div>
-          <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Dashboards</h1>
+        <header className="flex items-end justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm text-muted">Custom views</div>
+            <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Dashboards</h1>
+          </div>
+          <ModelToggle value={model} onChange={setModel} />
         </header>
 
-        <ActivityHeatmapPanel onAsk={onAsk} />
-        <PaceEfficiencyPanel onAsk={onAsk} />
-        <StrengthTrackerPanel onAsk={onAsk} />
-
-        <div className="border-t border-border my-2" />
-
-        <ChatPanel seedRequest={seedRequest} />
+        <ActivityHeatmapPanel sessionId={sessionId} model={model} />
+        <PaceEfficiencyPanel sessionId={sessionId} model={model} />
+        <StrengthTrackerPanel sessionId={sessionId} model={model} />
       </div>
     </div>
   )
 }
 
-/**
- * Tail strip rendered under each dashboard panel. Renders a short
- * "Ask the agent" row plus 2-3 context-aware question chips that seed
- * the page-level ChatPanel when clicked. The seed text always
- * mentions the active time window so the agent queries the right
- * slice without a follow-up.
- */
-function AskBar({
-  prompts, onAsk,
-}: {
-  prompts: { label: string; seed: string }[]
-  onAsk: AskHandler
-}) {
+function ModelToggle({ value, onChange }: { value: Model; onChange: (v: Model) => void }) {
   return (
-    <div className="mt-4 pt-3 border-t border-border/60 flex flex-wrap items-center gap-2">
-      <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted">
-        <MessageSquare className="size-3 text-accent" />
-        Ask the agent
-      </span>
-      {prompts.map((p) => (
+    <div className="flex bg-surface border border-border rounded-full p-0.5 text-[11px]">
+      {(['sonnet', 'opus'] as const).map((m) => (
         <button
-          key={p.label}
-          onClick={() => onAsk(p.seed)}
-          className="text-[12px] px-2.5 py-1 rounded-full border border-border text-muted hover:text-text hover:border-accent-dim hover:bg-surface transition-colors"
+          key={m}
+          onClick={() => onChange(m)}
+          className={
+            'px-2.5 py-1 rounded-full transition-colors ' +
+            (value === m ? 'bg-accent text-bg' : 'text-muted hover:text-text')
+          }
+          title={m === 'sonnet' ? 'Sonnet 4.6 — fast' : 'Opus 4.7 — deeper reasoning'}
         >
-          {p.label}
+          {m === 'sonnet' ? 'Sonnet' : 'Opus'}
         </button>
       ))}
     </div>
@@ -99,7 +91,7 @@ const HEATMAP_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function ActivityHeatmapPanel({ onAsk }: { onAsk: AskHandler }) {
+function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: Model }) {
   const [days, setDays] = useState<number>(365)
   const [data, setData] = useState<ActivityHeatmapDay[] | null>(null)
   const [hover, setHover] = useState<ActivityHeatmapDay | { date: string; rest: true } | null>(null)
@@ -110,7 +102,7 @@ function ActivityHeatmapPanel({ onAsk }: { onAsk: AskHandler }) {
   }, [days])
 
   const range = rangeLabel(days)
-  const heatmapPrompts = [
+  const heatmapPrompts: Prompt[] = [
     {
       label: 'Spot overload weeks',
       seed: `Look at my activity heatmap for the last ${range}. Identify weeks where I overloaded — too many high-load days in a row without recovery — and compare them to weeks where I balanced load and rest well. What pattern should I aim for?`,
@@ -144,7 +136,12 @@ function ActivityHeatmapPanel({ onAsk }: { onAsk: AskHandler }) {
           <div className="space-y-3">
             <HeatmapGrid days={days} data={data} onHover={setHover} />
             <HeatmapFooter hover={hover} data={data} />
-            <AskBar prompts={heatmapPrompts} onAsk={onAsk} />
+            <DashboardInsight
+              prompts={heatmapPrompts}
+              sessionId={sessionId}
+              model={model}
+              topic="activity heatmap"
+            />
           </div>
         )}
       </CardBody>
@@ -316,7 +313,7 @@ const PACE_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function PaceEfficiencyPanel({ onAsk }: { onAsk: AskHandler }) {
+function PaceEfficiencyPanel({ sessionId, model }: { sessionId: string; model: Model }) {
   const [days, setDays] = useState<number>(180)
   const [runs, setRuns] = useState<PaceEfficiencyRun[] | null>(null)
 
@@ -326,7 +323,7 @@ function PaceEfficiencyPanel({ onAsk }: { onAsk: AskHandler }) {
   }, [days])
 
   const range = rangeLabel(days)
-  const pacePrompts = [
+  const pacePrompts: Prompt[] = [
     {
       label: 'Read the trend',
       seed: `Walk me through my pace efficiency (HR per km/h) trend over the last ${range}. Is it improving or worsening? Cite the specific runs and the rolling-average shape.`,
@@ -468,7 +465,12 @@ function PaceEfficiencyPanel({ onAsk }: { onAsk: AskHandler }) {
           <Legend color="oklch(0.78 0.16 28)" label="HR per km/h (lower is better)" />
           <Legend color="oklch(0.78 0.16 158)" label="TSB — negative = accumulated fatigue" />
         </div>
-        <AskBar prompts={pacePrompts} onAsk={onAsk} />
+        <DashboardInsight
+          prompts={pacePrompts}
+          sessionId={sessionId}
+          model={model}
+          topic="pace efficiency"
+        />
       </CardBody>
     </Card>
   )
@@ -508,7 +510,7 @@ const STRENGTH_RANGES = [
   { label: '5y', weeks: 260 },
 ] as const
 
-function StrengthTrackerPanel({ onAsk }: { onAsk: AskHandler }) {
+function StrengthTrackerPanel({ sessionId, model }: { sessionId: string; model: Model }) {
   const [weeks, setWeeks] = useState<number>(104)
   const [resp, setResp] = useState<{
     values: StrengthVolumeWeek[]
@@ -526,7 +528,7 @@ function StrengthTrackerPanel({ onAsk }: { onAsk: AskHandler }) {
   }, [weeks])
 
   const range = `${weeks} weeks`
-  const strengthPrompts = [
+  const strengthPrompts: Prompt[] = [
     {
       label: 'Why so little strength?',
       seed: `My strength training has fallen off — last logged ${resp?.last_session_date ?? 'a long time ago'}. Walk me through whether this is hurting my running performance and recovery, and what the minimum viable strength routine would be for someone with my running load.`,
@@ -606,7 +608,12 @@ function StrengthTrackerPanel({ onAsk }: { onAsk: AskHandler }) {
             </div>
           </>
         )}
-        <AskBar prompts={strengthPrompts} onAsk={onAsk} />
+        <DashboardInsight
+          prompts={strengthPrompts}
+          sessionId={sessionId}
+          model={model}
+          topic="strength"
+        />
       </CardBody>
     </Card>
   )
