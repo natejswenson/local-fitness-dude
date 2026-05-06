@@ -7,7 +7,7 @@ import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
 import { DashboardInsight, type Prompt } from './DashboardInsight'
-import { HeatmapDayTooltip, type HoverTarget } from './HeatmapDayTooltip'
+import { HeatmapDayTooltip, type HoverTarget, type LoadRanking } from './HeatmapDayTooltip'
 import { fmtDate, fmtDateShort } from '@/lib/utils'
 import type {
   ActivityHeatmapDay, PaceEfficiencyRun, StrengthVolumeWeek,
@@ -81,6 +81,16 @@ function rangeLabel(days: number): string {
   return `${days} days`
 }
 
+/** Plain-English window descriptor for the rank line in the tooltip
+ *  ("Hardest day this year" reads better than "in 1 year"). */
+function rangeWindowLabel(days: number): string {
+  if (days <= 90) return `in ${days} days`
+  if (days <= 180) return 'in 6 months'
+  if (days <= 365) return 'this year'
+  if (days <= 730) return 'in 2 years'
+  return `in ${days} days`
+}
+
 // =====================================================================
 // Activity heatmap — calendar-style year view (52 weeks × 7 days)
 // =====================================================================
@@ -101,6 +111,23 @@ function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: 
     setData(null)
     api.activityHeatmap(days).then((r) => setData(r.values))
   }, [days])
+
+  // Build the load-rank lookup once per data refresh. Sort DESC by
+  // training load, then map date → 1-based ordinal. Ties resolve by
+  // the original date order (later = lower rank), which is fine —
+  // displaying "12th of 192" on a tied-50-load day is still accurate.
+  const ranking: LoadRanking | undefined = useMemo(() => {
+    if (!data) return undefined
+    const active = data.filter((d) => d.activity_count > 0)
+    const sorted = [...active].sort((a, b) => b.total_load - a.total_load)
+    const rankByDate = new Map<string, number>()
+    sorted.forEach((d, i) => rankByDate.set(d.date, i + 1))
+    return {
+      rankByDate,
+      totalActiveDays: active.length,
+      windowLabel: rangeWindowLabel(days),
+    }
+  }, [data, days])
 
   const range = rangeLabel(days)
   const heatmapPrompts: Prompt[] = [
@@ -137,7 +164,7 @@ function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: 
           <div className="space-y-3">
             <HeatmapGrid days={days} data={data} onHover={setHover} />
             <HeatmapTotals data={data} />
-            <HeatmapDayTooltip target={hover} />
+            <HeatmapDayTooltip target={hover} ranking={ranking} />
             <DashboardInsight
               prompts={heatmapPrompts}
               sessionId={sessionId}

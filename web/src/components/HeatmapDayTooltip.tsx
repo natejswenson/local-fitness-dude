@@ -32,7 +32,21 @@ export type HoverTarget =
   | { kind: 'active'; day: ActivityHeatmapDay; rect: DOMRect }
   | { kind: 'rest'; date: string; rect: DOMRect }
 
-export function HeatmapDayTooltip({ target }: { target: HoverTarget | null }) {
+export type LoadRanking = {
+  /** All active days in the window, sorted DESC by total_load. Used to
+   *  compute "Nth hardest" for the hovered day. Indexed by date. */
+  rankByDate: Map<string, number>
+  totalActiveDays: number
+  /** Human label for the visible window, e.g. "this year". */
+  windowLabel: string
+}
+
+export function HeatmapDayTooltip({
+  target, ranking,
+}: {
+  target: HoverTarget | null
+  ranking?: LoadRanking
+}) {
   // Cache rest-day fetches so re-hovering the same cell doesn't refetch.
   const cacheRef = useRef<Map<string, ActivityHeatmapDayResponse>>(new Map())
   const [restDayData, setRestDayData] = useState<ActivityHeatmapDayResponse | null>(null)
@@ -95,7 +109,7 @@ export function HeatmapDayTooltip({ target }: { target: HoverTarget | null }) {
       </header>
 
       {target.kind === 'active' ? (
-        <ActiveDaySection day={target.day} />
+        <ActiveDaySection day={target.day} ranking={ranking} />
       ) : (
         <RestDaySection date={target.date} data={restDayData} loading={restDayLoading} />
       )}
@@ -104,10 +118,22 @@ export function HeatmapDayTooltip({ target }: { target: HoverTarget | null }) {
   )
 }
 
-function ActiveDaySection({ day }: { day: ActivityHeatmapDay }) {
+function ActiveDaySection({
+  day, ranking,
+}: {
+  day: ActivityHeatmapDay
+  ranking?: LoadRanking
+}) {
   return (
     <>
-      <LoadHeader load={day.total_load} count={day.activity_count} duration={day.total_duration_seconds} />
+      <LoadHeader
+        load={day.total_load}
+        count={day.activity_count}
+        duration={day.total_duration_seconds}
+        rank={ranking?.rankByDate.get(day.date) ?? null}
+        totalDays={ranking?.totalActiveDays ?? 0}
+        windowLabel={ranking?.windowLabel ?? ''}
+      />
       {day.activities.length > 0 && <ActivitiesList activities={day.activities} />}
       <RecoverySection
         wellness={day.wellness}
@@ -152,28 +178,67 @@ function RestDaySection({
 // =====================================================================
 
 function LoadHeader({
-  load, count, duration,
+  load, count, duration, rank, totalDays, windowLabel,
 }: {
   load: number
   count: number
   duration: number
+  rank: number | null
+  totalDays: number
+  windowLabel: string
 }) {
   const tone = loadTone(load)
+  const rankBadge = rankLabel(rank, totalDays, windowLabel)
   return (
-    <div className="flex items-baseline justify-between border-b border-border/60 pb-2">
-      <div>
+    <div className="flex items-baseline justify-between gap-3 border-b border-border/60 pb-2">
+      <div className="min-w-0">
         <div className={`text-[18px] font-semibold tabular-nums ${tone}`}>
           {load.toFixed(0)}
         </div>
         <div className="text-[10px] uppercase tracking-wider text-faint mt-0.5">Training load</div>
       </div>
-      <div className="text-right">
+      <div className="text-right shrink-0">
         <div className="text-[12px] text-muted tabular-nums">
           {count} {count === 1 ? 'activity' : 'activities'} · {fmtSeconds(duration)}
         </div>
+        {rankBadge && (
+          <div className={`text-[11px] mt-0.5 tabular-nums ${rankBadge.tone}`}>
+            {rankBadge.text}
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+/**
+ * Plain-English rank label. Top 3 get the special "Hardest day"
+ * treatment; the rest just show ordinal position + percentile so you
+ * can tell instantly whether this was a notable day or a routine one.
+ */
+function rankLabel(
+  rank: number | null,
+  totalDays: number,
+  windowLabel: string,
+): { text: string; tone: string } | null {
+  if (rank == null || totalDays <= 1) return null
+  const pct = Math.round((rank / totalDays) * 100)
+  const win = windowLabel ? ` ${windowLabel}` : ''
+  if (rank === 1) return { text: `🔥 Hardest day${win}`, tone: 'text-bad font-medium' }
+  if (rank === 2) return { text: `2nd hardest${win}`, tone: 'text-warn font-medium' }
+  if (rank === 3) return { text: `3rd hardest${win}`, tone: 'text-warn font-medium' }
+  if (pct <= 5) return { text: `${ordinal(rank)} of ${totalDays} · top ${pct || 1}%`, tone: 'text-warn' }
+  if (pct <= 25) return { text: `${ordinal(rank)} of ${totalDays} · top ${pct}%`, tone: 'text-text' }
+  return { text: `${ordinal(rank)} of ${totalDays} · ${pct}th percentile`, tone: 'text-muted' }
+}
+
+function ordinal(n: number): string {
+  const rem10 = n % 10
+  const rem100 = n % 100
+  if (rem10 === 1 && rem100 !== 11) return `${n}st`
+  if (rem10 === 2 && rem100 !== 12) return `${n}nd`
+  if (rem10 === 3 && rem100 !== 13) return `${n}rd`
+  return `${n}th`
 }
 
 function ActivitiesList({ activities }: { activities: HeatmapActivity[] }) {
