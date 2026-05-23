@@ -70,12 +70,14 @@ function startOfDayUTC(d: Date): Date {
 }
 
 /** Map a composite fitness score (0..1, higher = better) to an OKLCH
- *  fill. score=1 → rich dark green; 0.5 → amber; 0 → saturated red. */
+ *  fill. Single-hue grey→green ramp: low scores fade to neutral grey
+ *  (low chroma, lighter); high scores are deep saturated green. No red
+ *  in the scale — bad days look grey, not alarming. */
 function scoreColor(score: number): string {
   const s = Math.max(0, Math.min(1, score))
-  const hue = (25 + s * 120).toFixed(0)        // 25 (red) → 145 (green)
-  const lightness = (0.40 + (1 - s) * 0.15).toFixed(3) // best is slightly darker / richer
-  const chroma = (0.16 + Math.abs(s - 0.5) * 0.1).toFixed(3) // ends more saturated than mid
+  const hue = 145                                       // constant green
+  const lightness = (0.55 - s * 0.15).toFixed(3)         // 0.55 (light) → 0.40 (dark)
+  const chroma = (0.02 + s * 0.16).toFixed(3)            // 0.02 (grey) → 0.18 (saturated)
   return `oklch(${lightness} ${chroma} ${hue})`
 }
 
