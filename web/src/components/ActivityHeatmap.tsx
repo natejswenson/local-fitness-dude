@@ -69,6 +69,16 @@ function startOfDayUTC(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
 }
 
+/** Map a composite fitness score (0..1, higher = better) to an OKLCH
+ *  fill. score=1 → rich dark green; 0.5 → amber; 0 → saturated red. */
+function scoreColor(score: number): string {
+  const s = Math.max(0, Math.min(1, score))
+  const hue = (25 + s * 120).toFixed(0)        // 25 (red) → 145 (green)
+  const lightness = (0.40 + (1 - s) * 0.15).toFixed(3) // best is slightly darker / richer
+  const chroma = (0.16 + Math.abs(s - 0.5) * 0.1).toFixed(3) // ends more saturated than mid
+  return `oklch(${lightness} ${chroma} ${hue})`
+}
+
 function HeatmapGrid({
   days, data, onHover, highlightToday,
 }: {
@@ -82,7 +92,30 @@ function HeatmapGrid({
   // ends exactly on today's column.
   const todayIso = useMemo(() => startOfDayUTC(new Date()).toISOString().slice(0, 10), [])
 
-  const { weeks, maxLoad } = useMemo(() => {
+  const { weeks } = useMemo(() => {
+    // Composite fitness score: equal-weight average of steps / RHR /
+    // training load / stress, each normalised to 0..1 where 1 = best.
+    // Missing components are skipped and the remaining ones re-weighted.
+    // Returns null when nothing is known about the day so the cell stays
+    // grey instead of being miscoloured as "worst".
+    function fitnessScore(day: ActivityHeatmapDay): number | null {
+      const parts: number[] = []
+      const steps = day.wellness?.steps
+      if (steps != null) parts.push(Math.max(0, Math.min(1, steps / 10000)))
+      const rhrPct = day.recovery_pct?.rhr
+      if (rhrPct != null) parts.push(1 - rhrPct / 100)
+      const stressPct = day.recovery_pct?.avg_stress
+      if (stressPct != null) parts.push(1 - stressPct / 100)
+      // Training load on a moderate-day scale — 80 ≈ a solid 45-min run.
+      // Rest days score 0 here, which is correct: zero load is the
+      // worst-case for the training axis. Other axes still contribute,
+      // so a green rest day is still possible.
+      if (day.total_load != null) {
+        parts.push(Math.max(0, Math.min(1, day.total_load / 80)))
+      }
+      if (parts.length === 0) return null
+      return parts.reduce((s, x) => s + x, 0) / parts.length
+    }
     const byDate = new Map(data.map((d) => [d.date, d]))
     const today = startOfDayUTC(new Date())
     const earliestStart = startOfDayUTC(new Date(today.getTime() - (days - 1) * MS_DAY))
@@ -91,7 +124,7 @@ function HeatmapGrid({
     const startWeek = new Date(earliestStart)
     startWeek.setUTCDate(startWeek.getUTCDate() - startWeek.getUTCDay())
 
-    const weeks: { date: string; row: number; col: number; entry?: ActivityHeatmapDay }[] = []
+    const weeks: { date: string; row: number; col: number; entry?: ActivityHeatmapDay; score: number | null }[] = []
     let col = 0
     let cursor = new Date(startWeek)
     while (cursor <= today) {
@@ -99,13 +132,13 @@ function HeatmapGrid({
         const cellDate = new Date(cursor.getTime() + row * MS_DAY)
         if (cellDate < earliestStart || cellDate > today) continue
         const iso = cellDate.toISOString().slice(0, 10)
-        weeks.push({ date: iso, row, col, entry: byDate.get(iso) })
+        const entry = byDate.get(iso)
+        weeks.push({ date: iso, row, col, entry, score: entry ? fitnessScore(entry) : null })
       }
       col++
       cursor = new Date(cursor.getTime() + 7 * MS_DAY)
     }
-    const maxLoad = Math.max(50, ...data.map((d) => d.total_load))
-    return { weeks, maxLoad }
+    return { weeks }
   }, [data, days])
 
   const cellSize = 12
@@ -135,15 +168,14 @@ function HeatmapGrid({
             {['', 'Mon', '', 'Wed', '', 'Fri', ''][dow]}
           </text>
         ))}
-        {/* Cells */}
+        {/* Cells — coloured by composite fitness score (steps / RHR /
+            training load / stress). Hue 145 (green) → 25 (red) as score
+            goes 1 → 0. Days with no wellness AND no training stay grey. */}
         {weeks.map((cell) => {
-          const isActive = cell.entry && cell.entry.activity_count > 0
-          const intensity = isActive
-            ? Math.min(1, cell.entry!.total_load / maxLoad)
-            : null
-          const fill = intensity == null
+          const score = cell.score
+          const fill = score == null
             ? 'var(--color-surface-2)'
-            : `oklch(${(0.32 + intensity * 0.42).toFixed(3)} ${(0.05 + intensity * 0.18).toFixed(3)} ${(155 - intensity * 130).toFixed(0)})`
+            : scoreColor(score)
           const isToday = highlightToday && cell.date === todayIso
           return (
             <rect
@@ -196,21 +228,22 @@ function HeatmapTotals({ data }: { data: ActivityHeatmapDay[] }) {
 }
 
 function ScaleLegend() {
+  // Left swatch is "no data" (grey); the rest walk score 0 → 1 (red → green).
   return (
     <div className="inline-flex items-center gap-1.5 text-[10px] text-faint">
-      <span>less</span>
+      <span>worse</span>
+      <span
+        className="size-3 rounded-sm border border-border"
+        style={{ background: 'var(--color-surface-2)' }}
+      />
       {[0, 0.25, 0.5, 0.75, 1].map((t) => (
         <span
           key={t}
           className="size-3 rounded-sm border border-border"
-          style={{
-            background: t === 0
-              ? 'var(--color-surface-2)'
-              : `oklch(${(0.32 + t * 0.42).toFixed(3)} ${(0.05 + t * 0.18).toFixed(3)} ${(155 - t * 130).toFixed(0)})`,
-          }}
+          style={{ background: scoreColor(t) }}
         />
       ))}
-      <span>more</span>
+      <span>better</span>
     </div>
   )
 }
