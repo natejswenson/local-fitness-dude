@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -308,6 +308,45 @@ def _iter_partial_takeaways(text: str, skip_count: int):
         pos = end
 
 
+RECENT_BRIEFS_LOOKBACK_DAYS = 7
+
+
+def _recent_briefs_summary(today: date | None = None, days: int = RECENT_BRIEFS_LOOKBACK_DAYS) -> str:
+    """Return a compact rendering of the last ``days`` saved briefs (excluding today).
+
+    Used to give the briefing agent continuity across days — so today's brief
+    can reference what it told {user_name} yesterday/last week and call out
+    follow-through (or the lack of it). Returns "" when there's no history.
+    """
+    today = today or date.today()
+    if not DEFAULT_BRIEFINGS_DIR.exists():
+        return ""
+    lines: list[str] = []
+    for offset in range(1, days + 1):
+        d = today - timedelta(days=offset)
+        path = DEFAULT_BRIEFINGS_DIR / f"{d.isoformat()}.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        takeaways = data.get("takeaways") or []
+        if not takeaways:
+            continue
+        lines.append(f"{d.isoformat()}:")
+        for tk in takeaways:
+            headline = (tk.get("headline") or "").strip()
+            tone = (tk.get("tone") or "").strip()
+            summary = (tk.get("summary") or "").strip()
+            if not headline:
+                continue
+            lines.append(f"  - [{tone}] {headline}")
+            if summary:
+                lines.append(f"    {summary}")
+    return "\n".join(lines)
+
+
 async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
     """Run the briefing agent and yield NDJSON-shaped events as the model emits.
 
@@ -358,9 +397,22 @@ async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
     tool_duration_sum_ms = 0.0
     pending_tool_names: dict[str, str] = {}
     loop_exit_reason = "normal"
+    recent_briefs = _recent_briefs_summary()
+    if recent_briefs:
+        # Count date headers (lines ending in ":" with no leading whitespace) —
+        # one per past brief included.
+        days_present = sum(
+            1 for ln in recent_briefs.split("\n")
+            if ln and not ln.startswith(" ") and ln.endswith(":")
+        )
+        LOG.info(
+            "brief_recent_history days_present=%d chars=%d",
+            days_present,
+            len(recent_briefs),
+        )
     try:
         async for message in query(
-            prompt=prompts.briefing_prompt(user_name, daily_step_goal),
+            prompt=prompts.briefing_prompt(user_name, daily_step_goal, recent_briefs),
             options=options,
         ):
             now = time.perf_counter()

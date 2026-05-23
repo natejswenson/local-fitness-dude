@@ -125,55 +125,105 @@ per chat turn unless {user_name} explicitly asks for several.
 """
 
 
-def briefing_prompt(user_name: str = DEFAULT_USER_NAME, daily_step_goal: int = 10000) -> str:
+def briefing_prompt(
+    user_name: str = DEFAULT_USER_NAME,
+    daily_step_goal: int = 10000,
+    recent_briefs_summary: str = "",
+) -> str:
+    if recent_briefs_summary.strip():
+        recent_section = f"""
+# What you said in recent briefs (most recent first)
+The lines below are the headlines and summaries from the last few days
+of briefs you wrote for {user_name}. Use them to thread continuity:
+
+{recent_briefs_summary}
+
+Continuity rules:
+- Reference the recent thread when it's relevant. If yesterday's brief
+  flagged "fitness sliding" and today's data shows another run on the
+  board, say so plainly — "Day 2 of the rebuild" or "second straight
+  workout — exactly what yesterday's call was for".
+- Call out follow-through, OR the lack of it. If you told {user_name}
+  to walk yesterday and steps are still under goal, escalate the tone
+  ("Same call as yesterday, same shortfall — this is a habit forming").
+  If you said "rest" and the data shows rest, name the win.
+- Don't repeat headlines verbatim across days. Fresh framing each day,
+  even if the underlying story is the same. "Fitness still sliding"
+  becomes "Day 3 of CTL falling" or "Three days, still no run logged".
+- These notes shape TONE and CONTINUITY only. They do NOT change the
+  JSON schema below. Never invent new top-level fields based on what a
+  prior brief mentioned.
+"""
+    else:
+        recent_section = ""
+
     return f"""Build today's morning brief for {user_name} as STRUCTURED JSON
 (not markdown) so the UI can render each takeaway as its own expandable
 card with an embedded chart.
+{recent_section}
 
 # Step 1 — gather the data
 Call (in any sensible order):
 1. get_today_status
 2. training_load_status
-3. query_workouts(days=7)
+3. query_workouts(days=14)  — 14 days, not 7. Conditioning trend
+   needs the longer window (run frequency, TE trajectory, distance
+   shifts).
 4. get_metric_trend(metric="sleep_seconds", days=14)
 5. get_metric_trend(metric="steps", days=14)   — REQUIRED. {user_name}
    tracks his daily step count closely and there must be a steps
    takeaway in every brief (see the "Steps mandate" section below).
 6. find_anomalies for rhr  — call it every brief, not just when something
    "looks off". {user_name} wants regressions surfaced loudly.
-7. get_metric_trend(metric="rhr", days=14) if RHR has any anomalies or
-   has drifted from baseline.
+7. get_metric_trend(metric="rhr", days=14)  — call this every brief,
+   not conditional. RHR is one of {user_name}'s focus areas; you need
+   the trend to write the HR & recovery takeaway.
+8. get_metric_trend(metric="body_battery_max", days=14) and
+   get_metric_trend(metric="avg_stress", days=14) when the recovery
+   picture is in flux (sleep score under 70, RHR drifting, or any
+   anomaly returned).
 
-# Step 2 — synthesize
-Identify the **3 to 5 things that actually matter today** for {user_name}.
-TWO of those slots are reserved and MUST appear in every brief:
-  • Today's recommended workout (see "Workout mandate" below).
-  • Daily steps status (see "Steps mandate" below).
-The remaining 1–3 slots are for whatever else moves today: sleep, RHR
-trend, recovery status, fitness/training-load trajectory, anomalies, etc.
+# Step 2 — focus areas (priority order)
+The brief has 3 to 5 takeaways. {user_name} has told you directly
+that these are the areas he cares about and wants pushed on. Pull
+takeaways from this list, in priority order:
 
-Examples of those contextual takeaways:
-- "Sleep was the weak link last night" (with sleep trend chart)
-- "Recovery is in great shape" (with RHR + body battery)
-- "RHR climbed 5bpm this week — keep an eye on it"
-- "Stress is creeping up off the recent baseline"
+1. **Today's workout** — REQUIRED, usually the lead. See "Workout
+   mandate" below.
+2. **Daily steps** — REQUIRED. See "Steps mandate" below.
+3. **Running conditioning** — REQUIRED when there's an actionable
+   story (CTL trending, run quality shifting, run frequency changing,
+   long absence). See "Conditioning mandate" below.
+4. **HR & recovery** — REQUIRED when the recovery picture should
+   change today's behavior (RHR drift, sleep crash, body battery low,
+   stress spike, OR all-green giving you a green light to push). See
+   "HR & recovery mandate" below.
+5. **Wildcard** — at most ONE slot for anything else genuinely
+   actionable today (anomaly, weather, race-week note).
 
-Order them by importance — most actionable first. The workout
-recommendation is usually the lead takeaway because it's the most
-actionable.
+The workout call is usually #1 because it's the most actionable. If
+conditioning or HR is the bigger story today ("fitness is collapsing",
+"recovery is in the red"), let that take the lead instead.
 
-# Trending-wrong-direction rule
-If ANY of these are true, that fact MUST appear as one of the brief's
-takeaways (with `tone: caution` or `tone: critical` as appropriate):
-- CTL (fitness) has dropped >10% in the last 30 days.
-- RHR is running >3bpm above the 60-day baseline for 3+ consecutive days.
-- 7-day sleep average is >45min below the 60-day baseline.
-- Steps 7-day average is below the daily goal.
-- An anomaly was returned by find_anomalies.
+# No dead weight rule
+Every takeaway must be USABLE to {user_name}. Before including one,
+ask: "What does Nate DO with this today?" If the answer is "nothing,
+it's just a number", cut it or merge it into a takeaway that has an
+action. Concrete bans:
 
-Do NOT bury a regression inside the workout or steps card just because
-those slots are taken — call it out as its own contextual takeaway.
-{user_name} explicitly asked for backsliding to be surfaced loudly.
+- A bare "RHR is 50" or "VO2 max is 47" with no implication → cut.
+- "Sleep was 8h 12m" with no tie to today's call → either tie it
+  ("you're recovered, push the run") or drop it.
+- A trend statement without a so-what → cut. "CTL down 12%" is data;
+  "CTL down 12% — three runs this week or it keeps falling" is a
+  takeaway.
+- "Stress was 22 yesterday vs 28 baseline" with no action → cut.
+- "Recovery is solid" with no instruction → either roll it into the
+  workout call ("recovery is green, push the intervals") or drop.
+
+If you only have 3 sharp takeaways and the 4th would be filler — ship
+3. {user_name} would rather read a tight 3-card brief than scroll
+through 5 cards of which 2 are noise.
 
 # Workout mandate (REQUIRED in every brief)
 Every brief must include exactly one "today's workout" takeaway. This
@@ -267,6 +317,98 @@ where {user_name} is sitting RIGHT NOW relative to that goal:
   number missed and the gap to goal in plain terms.
 
 The chart for the steps card is always `metric: steps, days: 14`.
+
+# Conditioning mandate (REQUIRED when there's a story)
+Running conditioning is {user_name}'s primary fitness focus. Include
+a conditioning takeaway when ANY of these are true:
+
+- CTL has changed >5% in the last 14 days (up or down).
+- 14-day run count is materially different from the prior period
+  (e.g. 2 runs this fortnight vs 6 the previous one, or vice versa).
+- Recent run quality is shifting — Training Effect creeping up or
+  collapsing across the last 3-5 sessions, or pace dropping at the
+  same HR.
+- It's been 5+ days since the last run.
+
+Tone rules:
+
+- **Trending up — runs landing, CTL climbing** → tone: positive. Name
+  the line and the next move. "CTL up from 9.1 to 12.4 in 10 days —
+  three runs landed and the engine is responding. Add one more this
+  week and you've cleared the rebuild phase."
+
+- **Stalled — same CTL, same volume for two weeks** → tone: neutral.
+  Push for the next gear. "CTL has held flat at 11 for two weeks —
+  the base is steady but you're not building. Time to add a slightly
+  longer run or a tempo segment."
+
+- **Sliding — CTL falling, runs are zone-2 filler** → tone: critical.
+  Be sharp. "CTL down 17% this month and the only runs on the board
+  are 30-min Zone 2 treadmill sessions (TE under 1). That's not
+  training, that's marking time. Pick a real session this week — long
+  run or intervals — or watch the line keep falling."
+
+- **Long absence — 5+ days since the last run** → tone: critical.
+  No hedge. "Six days, no run. The fitness line doesn't pause for
+  you — every day off is base lost. 30 minutes today, easy. Just go."
+
+Anatomy of a good conditioning takeaway:
+- Cite the actual CTL trend OR the actual run-count delta. Numbers,
+  not vibes.
+- Tie it to a concrete next move (long run, tempo, intervals,
+  another easy 30 this week).
+- Connect to today's workout call when relevant ("today's session
+  is step one of that").
+
+The chart for the conditioning card is usually `metric: ctl, days: 60`
+(multi-month arc) or `metric: ctl, days: 30` (recent trend).
+
+# HR & recovery mandate (REQUIRED when it changes today's call)
+Resting heart rate, sleep, body battery, and stress combine into a
+recovery picture. Include an HR/recovery takeaway when the picture
+should change what {user_name} does today:
+
+- **RHR 3+ bpm above baseline for 3+ days** → tone: caution or
+  critical. Dial back, watch for illness. "RHR has been 56–58 for
+  four days — that's 4-6 above your 53 baseline. Don't push intensity
+  until it settles. If it's still elevated in 48 hours, look at
+  sleep and load."
+
+- **RHR meaningfully below baseline + sleep solid + stress low** →
+  tone: positive. Green-light the workout. "RHR sitting at 48 vs 53
+  baseline, sleep score 88, stress at 12. The engine is firing —
+  don't waste the day on Zone 2."
+
+- **Sleep crashed (1+ hour below 60-day average) OR sleep score
+  under 65** → tone: caution. Tie it to today's call. "Sleep was
+  6h 12m last night — about 1h 50m short. That's a short sleep on
+  top of yesterday's run. Today: walk, easy effort, or rest. Don't
+  push intervals on a 60-something sleep score."
+
+- **Body battery topping under 50 for 3+ nights OR stress 7-day avg
+  >40** → tone: caution. Surface the pattern. "Body battery topped
+  at 38, 42, 31 the last three nights — recovery isn't catching up.
+  Skip the hard session this week, get one extra hour of sleep, run
+  easy."
+
+- **Recovery anomaly returned by find_anomalies** → name it
+  explicitly. "find_anomalies flagged April 24 RHR at 60 vs 53
+  baseline — three days later still elevated. That's not random."
+
+- **All recovery signals green AND there's no other reason to write
+  this card** → DO NOT write a standalone "you're fine" takeaway.
+  Roll the green light into the workout takeaway instead ("recovery
+  is green across the board — push the intervals").
+
+Anatomy of a good HR/recovery takeaway:
+- ONE clear lead signal (RHR OR sleep OR body battery OR stress —
+  pick the strongest), with the others cited as supporting.
+- A concrete next move tied to today: push, hold, ease off, rest.
+- Number AND implication, never just the number.
+
+Chart depends on the lead signal: `metric: rhr, days: 14`,
+`metric: sleep_seconds, days: 14`, `metric: body_battery_max, days: 14`,
+or `metric: avg_stress, days: 14`.
 
 # Step 3 — output JSON only
 
