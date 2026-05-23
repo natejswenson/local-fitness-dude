@@ -6,7 +6,6 @@ import { AuthGate } from './components/AuthGate'
 import { Dashboards } from './components/Dashboards'
 import { Today } from './components/Today'
 import { Trends } from './components/Trends'
-import { VariantHost } from './components/VariantHost'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -14,10 +13,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <AuthGate>
         <Routes>
-          {/* uxpolish preview — outside the main App layout so the sidebar
-              doesn't compete for attention while comparing variants. Reachable
-              in dev AND prod (so phone preview works against the container). */}
-          <Route path="__uxpolish" element={<VariantHost />} />
           <Route element={<App />}>
             <Route index element={<Today />} />
             <Route path="trends" element={<Trends />} />
