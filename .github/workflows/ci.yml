@@ -1,0 +1,33 @@
+name: CI
+
+# Treat the agent as code: lint it, test the deterministic core behind a
+# coverage gate, and score the prompt. Fails the build if any pillar regresses.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies (incl. dev group)
+        run: uv sync --dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Run tests with coverage gate
+        run: uv run pytest
+
+      - name: Score the agent prompt
+        run: uv run python scripts/score_prompt.py

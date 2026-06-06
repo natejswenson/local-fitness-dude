@@ -11,6 +11,8 @@ import importlib
 import httpx
 import pytest
 
+from local_fitness import db
+
 
 @pytest.fixture
 def anyio_backend() -> str:
@@ -19,7 +21,23 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-def app_with_token(monkeypatch):
+def hermetic_db(tmp_path, monkeypatch):
+    """Point the server at a schema-initialized temp DB.
+
+    The routes call `db.connect()` (no path) → `db.DEFAULT_DB_PATH`, resolved
+    live per request. Without this, the auth/route tests silently depended on
+    a developer's real `data/fitness.db` and exploded in CI with
+    `no such table: daily_metrics` (the failing path raises straight through
+    httpx.ASGITransport rather than becoming a 500).
+    """
+    db_path = tmp_path / "fitness.db"
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", db_path)
+    db.init_schema(db_path)
+    return db_path
+
+
+@pytest.fixture
+def app_with_token(monkeypatch, hermetic_db):
     """Load the server with a fixed API token so the auth middleware is on.
 
     Reload after env mutation because module import already captured
@@ -34,7 +52,7 @@ def app_with_token(monkeypatch):
 
 
 @pytest.fixture
-def app_no_token(monkeypatch):
+def app_no_token(monkeypatch, hermetic_db):
     """Server without auth (covers the loopback-only / dev path)."""
     monkeypatch.delenv("LOCAL_FITNESS_API_TOKEN", raising=False)
     from local_fitness.web import server as srv
