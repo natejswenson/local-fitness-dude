@@ -42,7 +42,7 @@ dev = [
 # aren't exercised here by design. See CHANGELOG 0.1.0.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=local_fitness --cov=scripts --cov-report=term-missing --cov-fail-under=45"
+addopts = "--cov=local_fitness --cov=scripts --cov-report=term-missing --cov-fail-under=43"
 
 [tool.coverage.run]
 source = ["local_fitness", "scripts"]

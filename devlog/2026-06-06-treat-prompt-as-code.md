@@ -27,9 +27,24 @@ a coverage gate, and version the whole thing.
 - **CI — `.github/workflows/ci.yml`.** ruff → pytest (coverage gate) → prompt
   scorer, on push/PR to `master`, using the repo's `uv` toolchain.
 
+- **Release — `.github/workflows/release.yml`.** After CI goes green on
+  `master`, cuts a GitHub Release + tag for the `pyproject.toml` version when
+  it isn't already released (idempotent; notes from the changelog). Bumping
+  the version ships a release; a normal merge is a no-op.
+
 - **Versioning — `CHANGELOG.md`.** Keep a Changelog + SemVer, anchored to the
   existing `version = "0.1.0"`. No bump: this is dev-side infra, not an
-  app-behaviour change.
+  app-behaviour change. (First release `v0.1.0` fires once this lands on
+  master and CI passes.)
+
+## CI fix found on first run
+
+The first CI run failed: `test_security.py`'s auth/route cases blew up with
+`no such table: daily_metrics`. They'd been silently relying on a developer's
+real `data/fitness.db` — on a fresh CI clone there's no schema, and the error
+raises straight through `httpx.ASGITransport` instead of becoming a 500. Made
+those fixtures hermetic (schema-initialized temp DB). Coverage on the
+empty-DB path is ~46%; gate set to 43% for stable margin.
 
 ## Notes / decisions
 

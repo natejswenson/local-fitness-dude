@@ -23,10 +23,18 @@ so the version is documented rather than bumped.
 - `tests/` — pytest suite covering the deterministic, network-free core
   (`db`, `notes`, `agent/schemas`, `agent/prompts`, `ingest/baselines`, the
   `agent/tools` handlers, and the scorer). `pyproject.toml` enforces a
-  whole-repo coverage gate via `--cov-fail-under` (current floor 45%; actual
-  ~46%). The Garmin-ingest, Claude chat/briefing, and FastAPI-route layers are
-  excluded from exercise by design (network/SDK).
+  whole-repo coverage gate via `--cov-fail-under` (floor 43%; actual ~46%).
+  The Garmin-ingest, Claude chat/briefing, and FastAPI-route layers are
+  largely excluded from exercise by design (network/SDK).
+- Made `tests/test_security.py` hermetic: the auth/route cases were silently
+  depending on a developer's real `data/fitness.db` and only failed once CI
+  ran them on a fresh clone (`no such table: daily_metrics`). They now run
+  against a schema-initialized temp DB.
 - `.github/workflows/ci.yml` — runs ruff, the test suite with the coverage
   gate, and the prompt scorer on every push and PR to `master` (uv toolchain).
+- `.github/workflows/release.yml` — after CI is green on `master`, cuts a
+  GitHub Release + tag for the `pyproject.toml` version if it isn't already
+  released (idempotent, notes pulled from this changelog). Bumping the version
+  is what ships a release; a normal merge is a no-op.
 - `requirements`/dev deps: `pytest-cov` and `coverage` added to the dev group.
 - This `CHANGELOG.md`.

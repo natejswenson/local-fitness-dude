@@ -1,0 +1,50 @@
+name: Release
+
+# Once CI is green on master, cut a GitHub Release for the version in
+# pyproject.toml — but only if that version hasn't been released yet. So a
+# normal merge is a no-op; bumping `version` in pyproject (with a matching
+# CHANGELOG entry) is what ships a release. Idempotent and version-driven.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+
+jobs:
+  release:
+    # Only when the CI run it followed actually succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Read version from pyproject.toml
+        id: ver
+        run: |
+          version=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $version"
+
+      - name: Create release if this version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.ver.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already released — nothing to do."
+            exit 0
+          fi
+          # Pull this version's section out of the changelog for release notes.
+          notes=$(awk -v v="${{ steps.ver.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" {f=1; next}
+            /^## \[/ {f=0}
+            f {print}
+          ' CHANGELOG.md)
+          [ -z "$notes" ] && notes="Release $tag"
+          gh release create "$tag" --target "${{ github.event.workflow_run.head_sha }}" \
+            --title "$tag" --notes "$notes"
+          echo "Released $tag."
