@@ -1,7 +1,7 @@
 import type {
   ActivityHeatmapResponse, BriefResponse, BriefStreamEvent, ChatEvent,
-  MetricSeries, PaceEfficiencyResponse, StrengthVolumeResponse, SyncState,
-  SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
+  MetricSeries, PaceEfficiencyResponse, PlanResponse, StrengthVolumeResponse,
+  SyncState, SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
 } from './types'
 
 // --- Auth token ---------------------------------------------------------
@@ -156,6 +156,18 @@ export const api = {
     return r.json() as Promise<SyncTriggerResponse>
   },
   syncStatus: () => getJson<SyncState>('/api/sync/status'),
+  // --- Training plans ---
+  plan: () => getJson<PlanResponse>('/api/plan'),
+  commitPlan: async (planId: number) => {
+    const r = await authedFetch(`/api/plan/${planId}/commit`, { method: 'POST' })
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+    return r.json() as Promise<{ plan_id: number; status: string }>
+  },
+  deletePlan: async (planId: number) => {
+    const r = await authedFetch(`/api/plan/${planId}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+    return r.json() as Promise<{ plan_id: number; status: string }>
+  },
   chatEnd: (sessionId: string) =>
     authedFetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),
   chat: async function* (

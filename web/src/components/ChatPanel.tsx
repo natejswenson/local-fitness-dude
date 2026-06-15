@@ -22,7 +22,15 @@ const newId = () => Math.random().toString(36).slice(2, 10)
 
 type SeedRequest = { text: string; nonce: number }
 
-export function ChatPanel({ seedRequest }: { seedRequest?: SeedRequest | null }) {
+export function ChatPanel({
+  seedRequest,
+  onTurnComplete,
+}: {
+  seedRequest?: SeedRequest | null
+  /** Fires after each assistant turn finishes streaming — the Training Plan
+   * page uses it to re-fetch the draft so the calendar/charts update live. */
+  onTurnComplete?: () => void
+}) {
   const [sessionId] = useState(() => crypto.randomUUID())
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -86,6 +94,7 @@ export function ChatPanel({ seedRequest }: { seedRequest?: SeedRequest | null })
       setMessages((m) => m.map((x) => (x.id === assistantMsg.id ? { ...x, pending: false } as Message : x)))
       setStreaming(false)
       abortRef.current = null
+      onTurnComplete?.()
     }
   }
 

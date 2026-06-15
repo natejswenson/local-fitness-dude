@@ -249,8 +249,9 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-        "font-src 'self' data:; connect-src 'self'",
+        "style-src 'self' 'unsafe-inline' https://rsms.me; "
+        "img-src 'self' data:; font-src 'self' data: https://rsms.me; "
+        "connect-src 'self'",
     )
     return response
 

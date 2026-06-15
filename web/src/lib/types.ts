@@ -253,3 +253,45 @@ export type PaceEfficiencyResponse = {
   end_date: string
   values: PaceEfficiencyRun[]
 }
+
+// --- Training plans -------------------------------------------------------
+
+export type PlanVerdict = 'done' | 'partial' | 'missed' | 'compliant' | 'pending'
+export type PlanWorkoutType =
+  | 'easy' | 'long' | 'tempo' | 'interval' | 'rest' | 'race' | 'cross'
+
+export type PlanWorkout = {
+  workout_id: number
+  plan_id: number
+  date: string
+  seq: number
+  week_index: number
+  type: PlanWorkoutType
+  target_distance_m: number | null
+  target_pace_sec_per_km: number | null
+  target_duration_sec: number | null
+  description: string
+  verdict: PlanVerdict
+}
+
+export type PlanWeekMileage = { week: number; planned_km: number; actual_km: number }
+
+export type PlanDetail = {
+  plan_id: number
+  status: 'draft' | 'active' | 'archived'
+  goal_type: '5k' | '10k' | 'half' | 'full' | 'custom'
+  goal_distance_m: number | null
+  race_date: string
+  target_time_seconds: number | null
+  title: string | null
+  ability_snapshot: unknown
+  created_at: string
+  committed_at: string | null
+  workouts: PlanWorkout[]
+  weekly_mileage: PlanWeekMileage[]
+  predicted_finish_seconds: number | null
+  adherence_pct: number | null
+  ctl_series: { date: string; ctl: number }[]
+}
+
+export type PlanResponse = { active: PlanDetail | null; draft: PlanDetail | null }
