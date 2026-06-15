@@ -289,18 +289,26 @@ result you fetched in Step 1.
   described above (training-load + recovery driven). Do NOT mention
   training plans at all — {user_name} has no active plan, so there is no
   plan content in the brief.
-- If it returned an active plan, the workout takeaway BECOMES the plan's
-  prescription for today, with two additions:
-  1. OPEN with yesterday's adherence from `last_graded` — name it plainly
-     (done / partial / missed). When {user_name} missed or half-did the
-     session, use his "roast when slipping" voice; never paper over a
-     missed workout with an offsetting average.
-  2. Prescribe `today`'s session from the plan — BUT reconcile it against
-     recovery. Recovery TAKES PRECEDENCE over the schedule: if RHR / TSB /
-     sleep flag a red day, defer or swap the prescribed session and say
-     why ("plan calls for 5x800m intervals, but RHR is +6 and TSB -22 —
-     do an easy 5k instead and push the quality session to tomorrow").
-     Never bully {user_name} into a hard plan session on a red-flag day.
+- If it returned an active plan, the workout takeaway is PLAN-AWARE and MUST
+  reference it — never silently drop an active plan. Always anchor it to the
+  goal: name the race and the days to race (`days_to_race`). Then:
+  1. ADHERENCE — if `last_graded` is present, OPEN with it (done / partial /
+     missed, in his "roast when slipping" voice when he missed it; never paper
+     over a missed session). If `last_graded` is null (the plan just started,
+     or nothing's been graded yet), SKIP adherence — don't invent it.
+  2. TODAY'S SESSION — two cases:
+     - `today` is PRESENT → prescribe it, reconciled against recovery. Recovery
+       TAKES PRECEDENCE over the schedule: if RHR / TSB / sleep flag a red day,
+       defer or swap the prescribed session and say why ("plan calls for 5x800m
+       intervals, but RHR is +6 and TSB -22 — do an easy 5k instead and push the
+       quality session to tomorrow"). Never bully {user_name} into a hard plan
+       session on a red-flag day.
+     - `today` is null (no session scheduled today — the plan starts later, a
+       rest day, or a gap) → do NOT fabricate a plan session. Say so plainly and
+       give the recovery-driven call, while still naming the goal + countdown:
+       "Sub-1:47 half is 89 days out — plan kicks off tomorrow, so today's free:
+       easy 3mi or rest" / "Rest day on the plan — [recovery read]." The plan
+       stays visible even when there's nothing prescribed today.
 
 This stays ONE takeaway — the workout slot. Do NOT add a separate
 "training plan" card: that would blow the 3–5 card budget and double up on
