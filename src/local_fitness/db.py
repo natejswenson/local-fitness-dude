@@ -148,6 +148,39 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS training_plans (
+    plan_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    status               TEXT NOT NULL,          -- 'draft' | 'active' | 'archived'
+    goal_type            TEXT NOT NULL,          -- '5k'|'10k'|'half'|'full'|'custom'
+    goal_distance_m      REAL,                   -- nullable: 'custom' may have no canonical distance
+    race_date            TEXT NOT NULL,          -- ISO YYYY-MM-DD
+    target_time_seconds  INTEGER,                -- nullable for 'just finish'
+    title                TEXT,
+    ability_snapshot     TEXT,                   -- JSON: AI's current-ability estimate at creation
+    created_at           TEXT NOT NULL,          -- ISO timestamp
+    committed_at         TEXT                    -- ISO timestamp when draft -> active
+);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON training_plans(status);
+-- Single-active invariant enforced by the DB: a commit race fails loudly rather
+-- than silently creating two active plans.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_plan
+    ON training_plans(status) WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS plan_workouts (
+    workout_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id                INTEGER NOT NULL,     -- -> training_plans.plan_id
+    date                   TEXT NOT NULL,        -- ISO YYYY-MM-DD
+    seq                    INTEGER NOT NULL DEFAULT 1,  -- intra-day order (AM/PM double-days)
+    week_index             INTEGER NOT NULL,     -- 1-based week within the plan
+    type                   TEXT NOT NULL,        -- easy|long|tempo|interval|rest|race|cross
+    target_distance_m      REAL,                 -- null for rest / by-feel
+    target_pace_sec_per_km REAL,                 -- null for rest / easy-by-feel
+    target_duration_sec    INTEGER,              -- used for interval/tempo/cross adherence
+    description            TEXT NOT NULL         -- prose prescription
+);
+CREATE INDEX IF NOT EXISTS idx_plan_workouts_plan ON plan_workouts(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_workouts_date ON plan_workouts(date);
 """
 
 
