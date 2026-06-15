@@ -8,7 +8,7 @@ import { api } from '@/lib/api'
 import type { PlanDetail, PlanResponse, PlanWorkout } from '@/lib/types'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
 import { ChatPanel } from './ChatPanel'
-import { cn, fmtDateShort, fmtMiles, fmtPaceMi } from '@/lib/utils'
+import { cn, fmtDateShort, fmtDayLocal, fmtMiles, fmtPaceMi } from '@/lib/utils'
 
 const DIST_HIT = 0.95 // within 5% of target distance counts as hit
 const PACE_HIT = 1.05 // within 5% slower than target pace counts as hit
@@ -42,8 +42,11 @@ function fmtClock(sec: number | null | undefined): string {
 }
 
 function daysUntil(iso: string): number {
-  const ms = new Date(iso).getTime() - Date.now()
-  return Math.ceil(ms / 86_400_000)
+  const [y, m, d] = iso.split('-').map(Number)
+  const target = new Date(y, m - 1, d).getTime()
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  return Math.round((target - now.getTime()) / 86_400_000)
 }
 
 export function TrainingPlan() {
@@ -164,7 +167,7 @@ function GoalHeader({ plan, onDelete, busy }: { plan: PlanDetail; onDelete: () =
           <div className="mt-2 text-3xl font-semibold tracking-tight tabular-nums">
             {days > 0 ? `${days} days` : days === 0 ? 'Race day' : 'Race passed'}
           </div>
-          <div className="mt-0.5 text-sm text-muted">to {fmtDateShort(plan.race_date)}</div>
+          <div className="mt-0.5 text-sm text-muted">to {fmtDayLocal(plan.race_date)}</div>
         </div>
 
         <div className="flex items-stretch gap-6">
@@ -230,7 +233,7 @@ function PlanCalendarTable({ workouts }: { workouts: PlanWorkout[] }) {
                 const missed = missedTargets(w)
                 return (
                   <tr key={w.workout_id} className="border-t border-border hover:bg-surface/50 align-top">
-                    <td className="py-2 pr-3 whitespace-nowrap text-muted">{fmtDateShort(w.date)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap text-muted">{fmtDayLocal(w.date)}</td>
                     <td className="py-2 pr-3">
                       <span className="capitalize font-medium">{w.type}</span>
                       <span className="text-muted"> — {w.description}</span>

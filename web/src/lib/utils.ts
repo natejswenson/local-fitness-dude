@@ -55,6 +55,16 @@ export function fmtDateShort(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+/**
+ * Format a plain `YYYY-MM-DD` calendar date in LOCAL time. `new Date('2026-06-16')`
+ * parses as UTC midnight, which renders as the previous day in negative-offset
+ * timezones — use this for discrete plan dates so they don't shift by a day.
+ */
+export function fmtDayLocal(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 export function deltaText(value: number | null, baseline: number | null, opts: { invertGood?: boolean } = {}): {
   text: string
   tone: 'good' | 'bad' | 'neutral'
