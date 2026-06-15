@@ -4,7 +4,7 @@ import {
   HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Target, Waves,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Brief, PlanWorkout, Takeaway, Workout } from '@/lib/types'
+import type { Brief, PlanDetail, PlanWorkout, Takeaway, Workout } from '@/lib/types'
 import { ActivityHeatmap } from './ActivityHeatmap'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
@@ -377,49 +377,67 @@ function loadTooltip(load: number): string {
  * straight from /api/plan (not the LLM brief). Renders nothing when there's
  * no active plan or no session scheduled today.
  */
+function isoLocal(d: Date): string {
+  return d.toLocaleDateString('en-CA') // local YYYY-MM-DD
+}
+
 function TodayGoal() {
-  // undefined = loading; null = no active plan / no upcoming session
-  const [goal, setGoal] = useState<{ w: PlanWorkout; label: string } | null | undefined>(undefined)
+  // undefined = loading; null = no active plan
+  const [plan, setPlan] = useState<PlanDetail | null | undefined>(undefined)
   useEffect(() => {
-    api.plan().then((p) => {
-      if (!p.active) { setGoal(null); return }
-      const iso = new Date().toLocaleDateString('en-CA') // local YYYY-MM-DD
-      const todayW = p.active.workouts.find((w) => w.date === iso)
-      if (todayW) { setGoal({ w: todayW, label: "Today's Goal" }); return }
-      // No session scheduled today (e.g. a rest gap, or the plan starts later) —
-      // surface the next upcoming session so there's always a goal to aim at.
-      const next = p.active.workouts
-        .filter((w) => w.date > iso)
-        .sort((a, b) => (a.date < b.date ? -1 : 1))[0]
-      setGoal(next ? { w: next, label: `Next · ${fmtDayLocal(next.date)}` } : null)
-    }).catch(() => setGoal(null))
+    api.plan().then((p) => setPlan(p.active)).catch(() => setPlan(null))
   }, [])
 
-  if (!goal) return null
-  const { w, label } = goal
-  const isRest = w.type === 'rest'
+  if (!plan) return null
+  const now = new Date()
+  const tomorrow = new Date()
+  tomorrow.setDate(now.getDate() + 1)
+  const todayISO = isoLocal(now)
+  const tomorrowISO = isoLocal(tomorrow)
+  const todayW = plan.workouts.find((w) => w.date === todayISO) ?? null
+  const tomorrowW = plan.workouts.find((w) => w.date === tomorrowISO) ?? null
+
+  // Nothing prescribed in this 2-day window (plan over, or a long rest gap) —
+  // don't add a noise card.
+  if (!todayW && !tomorrowW) return null
+
   return (
     <Card>
-      <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
-          <Target className="size-3.5 text-accent" />
-          {label}
-        </div>
-        {isRest ? (
-          <div className="text-lg font-medium">Rest day</div>
-        ) : (
-          <div className="flex items-baseline gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-border">
+        <GoalCell label="Today" date={todayISO} w={todayW} accent />
+        <GoalCell label="Tomorrow" date={tomorrowISO} w={tomorrowW} />
+      </div>
+    </Card>
+  )
+}
+
+function GoalCell({
+  label, date, w, accent = false,
+}: { label: string; date: string; w: PlanWorkout | null; accent?: boolean }) {
+  const isRest = w?.type === 'rest'
+  return (
+    <div className="px-5 py-4">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
+        <Target className={cn('size-3.5', accent ? 'text-accent' : 'text-muted')} />
+        {label}
+        <span className="text-faint normal-case tracking-normal">· {fmtDayLocal(date)}</span>
+      </div>
+      {!w ? (
+        <div className="mt-2 text-lg text-muted">No run scheduled</div>
+      ) : isRest ? (
+        <div className="mt-2 text-lg font-medium">Rest day</div>
+      ) : (
+        <>
+          <div className="mt-2 flex items-baseline gap-3">
             <span className="text-2xl font-semibold tabular-nums">{fmtMiles(w.target_distance_m)}</span>
             {w.target_pace_sec_per_km != null && (
-              <span className="text-lg tabular-nums text-muted">{fmtPaceMi(w.target_pace_sec_per_km)}</span>
+              <span className="text-base tabular-nums text-muted">{fmtPaceMi(w.target_pace_sec_per_km)}</span>
             )}
             <span className="text-sm text-muted capitalize">{w.type}</span>
           </div>
-        )}
-      </div>
-      {!isRest && (
-        <div className="px-5 pb-4 -mt-1 text-sm text-muted">{w.description}</div>
+          <div className="mt-1 text-sm text-muted">{w.description}</div>
+        </>
       )}
-    </Card>
+    </div>
   )
 }
