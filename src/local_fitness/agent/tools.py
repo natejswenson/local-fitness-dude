@@ -31,8 +31,10 @@ DAILY_NUMERIC_METRICS = {
 
 
 def _text(payload: Any) -> dict:
+    # Compact JSON (no indent) — fewer whitespace tokens across the multi-turn
+    # agent loop; the model parses either format.
     if not isinstance(payload, str):
-        payload = json.dumps(payload, indent=2, default=str)
+        payload = json.dumps(payload, default=str)
     return {"content": [{"type": "text", "text": payload}]}
 
 

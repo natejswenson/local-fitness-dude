@@ -20,6 +20,15 @@ const SUGGESTIONS = [
 
 const newId = () => Math.random().toString(36).slice(2, 10)
 
+// 3-way model tier. Default Sonnet (quality-first on the coaching path);
+// Haiku is the opt-in fast tier, Opus for the hardest questions.
+type ChatModel = 'haiku' | 'sonnet' | 'opus'
+const MODEL_IDS: Record<ChatModel, string> = {
+  haiku: 'claude-haiku-4-5',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-7',
+}
+
 type SeedRequest = { text: string; nonce: number }
 
 export function ChatPanel({
@@ -34,7 +43,7 @@ export function ChatPanel({
   const [sessionId] = useState(() => crypto.randomUUID())
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [model, setModel] = useState<'sonnet' | 'opus'>('sonnet')
+  const [model, setModel] = useState<ChatModel>('sonnet')
   const [streaming, setStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -73,7 +82,7 @@ export function ChatPanel({
     const trimmed = text.trim()
     if (!trimmed || streaming) return
 
-    const modelId = model === 'opus' ? 'claude-opus-4-7' : 'claude-sonnet-4-6'
+    const modelId = MODEL_IDS[model]
     const userMsg: Message = { role: 'user', text: trimmed, id: newId() }
     const assistantMsg: Message = {
       role: 'assistant', text: '', tools: [], id: newId(), pending: true,
@@ -252,19 +261,19 @@ function MessageBubble({ message, streaming }: { message: Message; streaming: bo
   )
 }
 
-function ModelToggle({ value, onChange }: { value: 'sonnet' | 'opus'; onChange: (v: 'sonnet' | 'opus') => void }) {
+function ModelToggle({ value, onChange }: { value: ChatModel; onChange: (v: ChatModel) => void }) {
   return (
     <div className="flex bg-surface border border-border rounded-full p-0.5 text-[11px]">
-      {(['sonnet', 'opus'] as const).map((m) => (
+      {(['haiku', 'sonnet', 'opus'] as const).map((m) => (
         <button
           key={m}
           onClick={() => onChange(m)}
           className={cn(
-            'px-2.5 py-0.5 rounded-full transition-colors',
+            'px-2.5 py-0.5 rounded-full transition-colors capitalize',
             value === m ? 'bg-accent text-bg' : 'text-muted hover:text-text',
           )}
         >
-          {m === 'sonnet' ? 'Sonnet' : 'Opus'}
+          {m}
         </button>
       ))}
     </div>

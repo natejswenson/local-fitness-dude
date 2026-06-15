@@ -47,7 +47,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .. import db, notes as user_notes_mod, plans as plans_mod
 from ..agent import briefing as briefing_mod
@@ -1077,10 +1077,24 @@ async def api_sync_status():
 
 # ---------------------------------------------------------------- API: chat --
 
+#: Models the chat toggle is allowed to select. Whitelisted so the request
+#: body can never pass an arbitrary model string through to the SDK.
+ALLOWED_CHAT_MODELS = frozenset(
+    {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"}
+)
+
+
 class ChatRequest(BaseModel):
     session_id: str
     message: str
     model: str = "claude-sonnet-4-6"
+
+    @field_validator("model")
+    @classmethod
+    def _model_whitelisted(cls, v: str) -> str:
+        if v not in ALLOWED_CHAT_MODELS:
+            raise ValueError(f"model must be one of {sorted(ALLOWED_CHAT_MODELS)}")
+        return v
 
 
 async def _get_or_create_session(session_id: str, model: str) -> ClaudeSDKClient:
