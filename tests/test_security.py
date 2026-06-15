@@ -195,6 +195,38 @@ async def test_security_headers_present(app_no_token):
         assert r.headers.get("referrer-policy") == "no-referrer"
 
 
+@pytest.mark.anyio
+async def test_csp_blocks_inline_scripts(app_no_token):
+    """AI-authored plan strings render in the SPA; a strict script-src is the
+    defense-in-depth against a stored-XSS / token-theft sink."""
+    transport = httpx.ASGITransport(app=app_no_token.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.get("/health")
+        csp = r.headers.get("content-security-policy", "")
+        assert "script-src 'self'" in csp
+        assert "'unsafe-inline'" not in csp.split("style-src")[0]  # not on script-src
+
+
+@pytest.mark.anyio
+async def test_plan_endpoints_require_auth(app_with_token):
+    """GET/commit/delete on /api/plan must be bearer-gated by the middleware,
+    and the int path param must reject non-int (no injection surface)."""
+    transport = httpx.ASGITransport(app=app_with_token.app)
+    tok = {"Authorization": "Bearer test-token-fixed"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        # GET
+        assert (await c.get("/api/plan")).status_code == 401
+        assert (await c.get("/api/plan", headers=tok)).status_code == 200
+        # commit
+        assert (await c.post("/api/plan/1/commit")).status_code == 401
+        # with token: 404 (no such plan) — auth passed, not 401
+        assert (await c.post("/api/plan/1/commit", headers=tok)).status_code == 404
+        # delete
+        assert (await c.delete("/api/plan/1")).status_code == 401
+        # non-int path param rejected (422) once authed
+        assert (await c.post("/api/plan/abc/commit", headers=tok)).status_code == 422
+
+
 def test_serve_refuses_non_loopback_without_token(monkeypatch):
     """Startup safety: binding to 0.0.0.0 without a token must hard-fail
     (the whole point of the audit)."""

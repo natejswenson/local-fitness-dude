@@ -49,7 +49,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import db, notes as user_notes_mod
+from .. import db, notes as user_notes_mod, plans as plans_mod
 from ..agent import briefing as briefing_mod
 from ..agent import prompts
 from ..agent import tools as agent_tools
@@ -243,6 +243,15 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # CSP: scripts only from same origin (no inline JS) — blocks AI-authored
+    # plan strings from becoming a stored-XSS / token-theft sink. style-src
+    # allows inline styles because recharts/React set element style attributes.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "font-src 'self' data:; connect-src 'self'",
+    )
     return response
 
 
@@ -369,6 +378,63 @@ async def api_training_load(days: int = Query(180, ge=7, le=2000)) -> dict:
             (cutoff,),
         ).fetchall()]
     return {"days": days, "values": rows}
+
+
+# ---------------------------------------------------------------- API: plans --
+# Training plans. GET assembles the whole tab (graded workouts + rollups +
+# predicted finish + CTL series). commit/delete are the human-driven
+# activation/soft-delete actions — the agent has no tool for either. None of
+# these call Claude, so none are rate-limited.
+
+_RIEGEL_LOOKBACK_DAYS = 120
+
+
+def _assemble_plan_detail(plan: dict | None) -> dict | None:
+    if plan is None:
+        return None
+    frontier = db.last_known_daily_date()
+    today = date.today().isoformat()
+    dates = [w["date"] for w in plan["workouts"]] or [today]
+    start, end = min(dates), max([today, *dates])
+    activities_by_date = plans_mod.load_activities_by_date(start, end)
+    cutoff = (date.today() - timedelta(days=_RIEGEL_LOOKBACK_DAYS)).isoformat()
+    best = plans_mod.best_recent_effort(cutoff)
+    detail = plans_mod.build_plan_detail(plan, frontier, activities_by_date, best)
+    with db.connect() as conn:
+        detail["ctl_series"] = [
+            dict(r) for r in conn.execute(
+                "SELECT date, ctl FROM baselines WHERE ctl IS NOT NULL ORDER BY date"
+            ).fetchall()
+        ]
+    return detail
+
+
+@app.get("/api/plan")
+async def api_plan() -> dict:
+    return {
+        "active": _assemble_plan_detail(plans_mod.get_active_plan()),
+        "draft": _assemble_plan_detail(plans_mod.get_draft_plan()),
+    }
+
+
+@app.post("/api/plan/{plan_id}/commit")
+async def api_plan_commit(plan_id: int) -> dict:
+    try:
+        plans_mod.commit_plan(plan_id, now=datetime.now().isoformat(timespec="seconds"))
+    except plans_mod.PlanNotFoundError:
+        raise HTTPException(404, "plan not found")
+    except plans_mod.NotDraftError:
+        raise HTTPException(409, "plan is not a draft")
+    return {"plan_id": plan_id, "status": "active"}
+
+
+@app.delete("/api/plan/{plan_id}")
+async def api_plan_delete(plan_id: int) -> dict:
+    try:
+        plans_mod.delete_plan(plan_id)
+    except plans_mod.PlanNotFoundError:
+        raise HTTPException(404, "plan not found")
+    return {"plan_id": plan_id, "status": "archived"}
 
 
 @app.get("/api/workouts")
