@@ -243,6 +243,11 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # Don't advertise the server stack (uvicorn's header is suppressed in serve()).
+    response.headers["Server"] = "fitness"
+    # HSTS — the proxy terminates TLS; browsers ignore this over plain HTTP. No
+    # includeSubDomains/preload (intranet host, self-signed cert).
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     # CSP: scripts only from same origin (no inline JS) — blocks AI-authored
     # plan strings from becoming a stored-XSS / token-theft sink. style-src
     # allows inline styles because recharts/React set element style attributes.
@@ -1254,4 +1259,5 @@ def serve(host: str | None = None, port: int = 8765, reload: bool = False) -> No
         port=port,
         reload=reload,
         log_level="info",
+        server_header=False,  # don't advertise "Server: uvicorn"; middleware sets our own
     )

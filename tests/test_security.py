@@ -193,6 +193,9 @@ async def test_security_headers_present(app_no_token):
         assert r.headers.get("x-content-type-options") == "nosniff"
         assert r.headers.get("x-frame-options") == "DENY"
         assert r.headers.get("referrer-policy") == "no-referrer"
+        # Hardening: no stack disclosure, and HSTS present.
+        assert r.headers.get("server") == "fitness"
+        assert "max-age=" in r.headers.get("strict-transport-security", "")
 
 
 @pytest.mark.anyio
