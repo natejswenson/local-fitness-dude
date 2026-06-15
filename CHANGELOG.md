@@ -25,6 +25,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   taper into the race).
 - A `Content-Security-Policy` header (`script-src 'self'`) as defense-in-depth
   against XSS from AI-authored plan strings.
+- The plan schedule shows **Target** and **Actual** columns (distance + pace);
+  past days where you fell short on distance or pace render red. All
+  runner-facing distances/pace display in **miles** (mi, min/mi).
+- The Today tab shows a **Today's Goal** card (mileage + pace to hit) whenever
+  the active plan prescribes a session today — read deterministically from
+  `/api/plan`, not the LLM brief.
 
 ### Security
 - The whole feature was hardened through a siege + red-team adversarial pass

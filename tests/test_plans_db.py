@@ -167,6 +167,28 @@ def test_build_plan_detail_grades_and_rolls_up():
     assert detail["weekly_mileage"][0]["planned_km"] == 18.0
 
 
+def test_build_plan_detail_attaches_actuals():
+    """Each graded workout carries actual distance + aggregate pace from the
+    matched activities, so the schedule can show Target vs Actual."""
+    plan = {
+        "plan_id": 1, "goal_type": "10k", "goal_distance_m": 10000.0,
+        "race_date": "2026-09-14",
+        "workouts": [
+            _wk(date="2026-07-01", target_distance_m=6000.0),  # ran it
+            _wk(date="2026-07-02", target_distance_m=6000.0),  # skipped
+        ],
+    }
+    # 6km in 1800s → 300 s/km pace
+    activities_by_date = {"2026-07-01": [_run(6000, duration=1800)]}
+    detail = plans.build_plan_detail(plan, frontier="2026-07-08",
+                                     activities_by_date=activities_by_date)
+    w0, w1 = detail["workouts"]
+    assert w0["actual_distance_m"] == 6000.0
+    assert abs(w0["actual_pace_sec_per_km"] - 300.0) < 0.01
+    assert w1["actual_distance_m"] == 0.0
+    assert w1["actual_pace_sec_per_km"] is None
+
+
 def test_build_plan_status_inactive():
     assert plans.build_plan_status(None, frontier="2026-07-08",
                                    activities_by_date={}, today="2026-07-05") == {"active": False}

@@ -272,6 +272,8 @@ export type PlanWorkout = {
   target_duration_sec: number | null
   description: string
   verdict: PlanVerdict
+  actual_distance_m: number
+  actual_pace_sec_per_km: number | null
 }
 
 export type PlanWeekMileage = { week: number; planned_km: number; actual_km: number }

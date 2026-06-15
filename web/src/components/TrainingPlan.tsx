@@ -3,25 +3,31 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Legend as RLegend,
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { CheckCircle2, CircleDashed, Loader2, Target, Trash2, XCircle } from 'lucide-react'
+import { Loader2, Target, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { PlanDetail, PlanResponse, PlanVerdict, PlanWorkout } from '@/lib/types'
+import type { PlanDetail, PlanResponse, PlanWorkout } from '@/lib/types'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
 import { ChatPanel } from './ChatPanel'
-import { cn, fmtDateShort, fmtKm } from '@/lib/utils'
+import { cn, fmtDateShort, fmtMiles, fmtPaceMi } from '@/lib/utils'
+
+const DIST_HIT = 0.95 // within 5% of target distance counts as hit
+const PACE_HIT = 1.05 // within 5% slower than target pace counts as hit
+
+/** A past session missed if it fell short on distance OR was too slow. */
+function missedTargets(w: PlanWorkout): boolean {
+  if (w.verdict === 'pending' || w.type === 'rest') return false
+  if (w.actual_distance_m === 0) return true
+  const distMiss = w.target_distance_m != null && w.actual_distance_m < w.target_distance_m * DIST_HIT
+  const paceMiss =
+    w.target_pace_sec_per_km != null && w.actual_pace_sec_per_km != null &&
+    w.actual_pace_sec_per_km > w.target_pace_sec_per_km * PACE_HIT
+  return distMiss || paceMiss
+}
 
 type SeedRequest = { text: string; nonce: number }
 
 const GOAL_LABELS: Record<string, string> = {
   '5k': '5K', '10k': '10K', half: 'Half Marathon', full: 'Marathon', custom: 'Custom',
-}
-
-const VERDICT_STYLE: Record<PlanVerdict, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
-  done: { label: 'Done', cls: 'text-good', Icon: CheckCircle2 },
-  partial: { label: 'Partial', cls: 'text-[oklch(0.78_0.16_65)]', Icon: CircleDashed },
-  missed: { label: 'Missed', cls: 'text-bad', Icon: XCircle },
-  compliant: { label: 'Rest', cls: 'text-muted', Icon: CheckCircle2 },
-  pending: { label: 'Scheduled', cls: 'text-faint', Icon: CircleDashed },
 }
 
 function fmtClock(sec: number | null | undefined): string {
@@ -212,31 +218,30 @@ function PlanCalendarTable({ workouts }: { workouts: PlanWorkout[] }) {
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted">
                 <th className="font-medium pb-2 pr-3">Date</th>
-                <th className="font-medium pb-2 pr-3">Wk</th>
                 <th className="font-medium pb-2 pr-3">Session</th>
                 <th className="font-medium pb-2 pr-3 text-right">Target</th>
-                <th className="font-medium pb-2 text-right">Status</th>
+                <th className="font-medium pb-2 text-right">Actual</th>
               </tr>
             </thead>
             <tbody>
               {workouts.map((w) => {
-                const v = VERDICT_STYLE[w.verdict]
+                const isRest = w.type === 'rest'
+                const showActual = w.verdict !== 'pending' && !isRest
+                const missed = missedTargets(w)
                 return (
-                  <tr key={w.workout_id} className="border-t border-border hover:bg-surface/50">
+                  <tr key={w.workout_id} className="border-t border-border hover:bg-surface/50 align-top">
                     <td className="py-2 pr-3 whitespace-nowrap text-muted">{fmtDateShort(w.date)}</td>
-                    <td className="py-2 pr-3 tabular-nums text-faint">{w.week_index}</td>
                     <td className="py-2 pr-3">
                       <span className="capitalize font-medium">{w.type}</span>
                       <span className="text-muted"> — {w.description}</span>
                     </td>
                     <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap text-muted">
-                      {w.target_distance_m != null ? fmtKm(w.target_distance_m) : '—'}
+                      <PaceDist dist={w.target_distance_m} pace={w.target_pace_sec_per_km} rest={isRest} />
                     </td>
-                    <td className="py-2 text-right">
-                      <span className={cn('inline-flex items-center gap-1 justify-end', v.cls)}>
-                        <v.Icon className="size-3.5" />
-                        {v.label}
-                      </span>
+                    <td className={cn('py-2 text-right tabular-nums whitespace-nowrap',
+                      !showActual ? 'text-faint' : missed ? 'text-bad' : 'text-good')}>
+                      {isRest ? '—' : !showActual ? 'Scheduled'
+                        : <PaceDist dist={w.actual_distance_m} pace={w.actual_pace_sec_per_km} rest={false} />}
                     </td>
                   </tr>
                 )
@@ -249,7 +254,22 @@ function PlanCalendarTable({ workouts }: { workouts: PlanWorkout[] }) {
   )
 }
 
+function PaceDist({ dist, pace, rest }: { dist: number | null; pace: number | null; rest: boolean }) {
+  if (rest) return <span className="text-faint">Rest</span>
+  if (dist == null && pace == null) return <>—</>
+  const parts: string[] = []
+  if (dist != null) parts.push(fmtMiles(dist))
+  if (pace != null) parts.push(fmtPaceMi(pace))
+  return <>{parts.join(' · ')}</>
+}
+
 function WeeklyMileageChart({ data }: { data: PlanDetail['weekly_mileage'] }) {
+  // Convert the metric rollup (km) to miles at the display edge.
+  const miles = data.map((d) => ({
+    week: d.week,
+    planned_mi: +(d.planned_km * 0.621371).toFixed(1),
+    actual_mi: +(d.actual_km * 0.621371).toFixed(1),
+  }))
   return (
     <Card>
       <CardHeader>
@@ -264,15 +284,15 @@ function WeeklyMileageChart({ data }: { data: PlanDetail['weekly_mileage'] }) {
       <CardBody>
         <div className="h-60">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+            <BarChart data={miles} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid stroke="var(--color-border)" strokeDasharray="2 4" vertical={false} />
               <XAxis dataKey="week" tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
                 tickFormatter={(w) => `W${w}`} axisLine={{ stroke: 'var(--color-border)' }} tickLine={false} />
-              <YAxis tick={{ fill: 'var(--color-faint)', fontSize: 11 }} axisLine={false} tickLine={false} width={32} unit="k" />
-              <Tooltip content={<PlanTooltip suffix=" km" />} />
+              <YAxis tick={{ fill: 'var(--color-faint)', fontSize: 11 }} axisLine={false} tickLine={false} width={32} unit="mi" />
+              <Tooltip content={<PlanTooltip suffix=" mi" />} />
               <RLegend wrapperStyle={{ display: 'none' }} />
-              <Bar dataKey="planned_km" fill="oklch(0.55 0.13 250)" name="Planned" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-              <Bar dataKey="actual_km" fill="oklch(0.78 0.16 158)" name="Actual" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+              <Bar dataKey="planned_mi" fill="oklch(0.55 0.13 250)" name="Planned" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+              <Bar dataKey="actual_mi" fill="oklch(0.78 0.16 158)" name="Actual" radius={[3, 3, 0, 0]} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         </div>

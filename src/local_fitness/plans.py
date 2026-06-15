@@ -499,6 +499,14 @@ def _adherence_pct(graded_workouts: list[dict]) -> int | None:
     return round(100 * score / len(graded))
 
 
+def _workout_actuals(day_activities: list[dict]) -> tuple[float, float | None]:
+    """Actual running distance (m) and aggregate pace (sec/km) for a day."""
+    dist = _running_distance(day_activities)
+    dur = _running_duration(day_activities)
+    pace = (dur / (dist / 1000.0)) if dist > 0 else None
+    return dist, pace
+
+
 def build_plan_detail(
     plan: dict,
     frontier: str | None,
@@ -506,10 +514,16 @@ def build_plan_detail(
     best_effort: dict | None = None,
 ) -> dict:
     """Assemble the full PlanDetail the tab renders (workouts graded, rollups)."""
-    graded = [
-        {**w, "verdict": grade_workout(w, activities_by_date.get(w["date"], []), frontier)}
-        for w in plan["workouts"]
-    ]
+    graded = []
+    for w in plan["workouts"]:
+        day = activities_by_date.get(w["date"], [])
+        actual_dist, actual_pace = _workout_actuals(day)
+        graded.append({
+            **w,
+            "verdict": grade_workout(w, day, frontier),
+            "actual_distance_m": actual_dist,
+            "actual_pace_sec_per_km": actual_pace,
+        })
     predicted = None
     if best_effort:
         predicted = riegel_predict(

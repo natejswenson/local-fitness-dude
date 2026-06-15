@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Activity, Bike, ChevronDown, ChevronRight, Dumbbell, Footprints,
-  HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Waves,
+  HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Target, Waves,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Brief, Takeaway, Workout } from '@/lib/types'
+import type { Brief, PlanWorkout, Takeaway, Workout } from '@/lib/types'
 import { ActivityHeatmap } from './ActivityHeatmap'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
 import { SyncIndicator } from './SyncIndicator'
 import { TakeawayCard } from './TakeawayCard'
-import { cn, fmtDate, fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
+import { cn, fmtDate, fmtKm, fmtMiles, fmtPace, fmtPaceMi, fmtSeconds } from '@/lib/utils'
 
 type SeedRequest = { text: string; nonce: number }
 
@@ -146,6 +146,10 @@ export function Today() {
             <ActivityHeatmap days={365} highlightToday />
           </CardBody>
         </Card>
+
+        {/* Today's plan goal — only renders when an active plan prescribes a
+            session today. Deterministic (from /api/plan), not the LLM brief. */}
+        <TodayGoal />
 
         {/* Key Takeaways — multi-column on lg+ to use horizontal space and
             keep the brief above-the-fold. Each card is compact by default
@@ -365,4 +369,48 @@ function loadTooltip(load: number): string {
   if (load >= 80) return `Training load ${load.toFixed(0)} — hard session`
   if (load >= 30) return `Training load ${load.toFixed(0)} — moderate session`
   return `Training load ${load.toFixed(0)} — easy session`
+}
+
+/**
+ * "Today's Goal" — when an active plan prescribes a session for the local
+ * calendar day, show the target mileage + pace to hit. Deterministic, read
+ * straight from /api/plan (not the LLM brief). Renders nothing when there's
+ * no active plan or no session scheduled today.
+ */
+function TodayGoal() {
+  const [today, setToday] = useState<PlanWorkout | null | undefined>(undefined)
+  useEffect(() => {
+    api.plan().then((p) => {
+      if (!p.active) { setToday(null); return }
+      const iso = new Date().toLocaleDateString('en-CA') // local YYYY-MM-DD
+      setToday(p.active.workouts.find((w) => w.date === iso) ?? null)
+    }).catch(() => setToday(null))
+  }, [])
+
+  if (!today) return null
+  const isRest = today.type === 'rest'
+  return (
+    <Card>
+      <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
+          <Target className="size-3.5 text-accent" />
+          Today's Goal
+        </div>
+        {isRest ? (
+          <div className="text-lg font-medium">Rest day</div>
+        ) : (
+          <div className="flex items-baseline gap-4">
+            <span className="text-2xl font-semibold tabular-nums">{fmtMiles(today.target_distance_m)}</span>
+            {today.target_pace_sec_per_km != null && (
+              <span className="text-lg tabular-nums text-muted">{fmtPaceMi(today.target_pace_sec_per_km)}</span>
+            )}
+            <span className="text-sm text-muted capitalize">{today.type}</span>
+          </div>
+        )}
+      </div>
+      {!isRest && (
+        <div className="px-5 pb-4 -mt-1 text-sm text-muted">{today.description}</div>
+      )}
+    </Card>
+  )
 }
