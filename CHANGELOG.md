@@ -4,6 +4,35 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-15
+
+### Added
+- **Training plans.** A new `/plan` tab where you pick a goal (5K / 10K / Half /
+  Full / Custom), a race date, and a target time; the agent drafts a periodized
+  plan from your Garmin history, you riff with it in chat, and commit it. The
+  committed plan is tracked on the tab (goal header with a computed Riegel
+  predicted finish, schedule with per-day adherence verdicts, planned-vs-actual
+  weekly mileage, CTL trajectory) and folded into the daily brief's workout
+  takeaway (yesterday's adherence + today's session, with recovery taking
+  precedence over the schedule on red-flag days).
+- Two new tables (`training_plans`, `plan_workouts`) with a partial unique index
+  enforcing a single active plan at the DB level.
+- Three draft-only agent tools (`propose_training_plan`, `revise_training_plan`,
+  `get_training_plan_status`) — the agent can only write drafts; activating or
+  deleting a plan is a human action.
+- REST: `GET /api/plan`, `POST /api/plan/{id}/commit`, `DELETE /api/plan/{id}`.
+- `plans.score_plan` — a deterministic plan-quality gate (safe ≤15%/week ramp +
+  taper into the race).
+- A `Content-Security-Policy` header (`script-src 'self'`) as defense-in-depth
+  against XSS from AI-authored plan strings.
+
+### Security
+- The whole feature was hardened through a siege + red-team adversarial pass
+  before implementation; the design and contract live in `docs/plans/`. Adherence
+  is computed from the activities join (immune to plan-row edits), graded against
+  the data frontier (Garmin lag never shows a false "missed"), and type-aware
+  (intervals/tempo by duration, cross-training by non-running activity).
+
 ## [0.1.0] - 2026-06-06
 
 First documented release. The version was already `0.1.0` in `pyproject.toml`;

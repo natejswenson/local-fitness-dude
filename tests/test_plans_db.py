@@ -110,6 +110,33 @@ def test_delete_missing_raises(dbp):
         plans.delete_plan(9999, db_path=dbp)
 
 
+def test_cannot_force_second_active_plan(dbp):
+    """The partial unique index is the race backstop: even a direct UPDATE
+    that would create a second active plan must fail loudly (design H5)."""
+    import sqlite3
+
+    a = plans.insert_draft(_plan(), [_wk()], db_path=dbp)
+    plans.commit_plan(a, now="t", db_path=dbp)
+    b = plans.insert_draft(_plan(), [_wk()], db_path=dbp)
+    with pytest.raises(sqlite3.IntegrityError):
+        with db.connect(dbp) as conn:
+            conn.execute("UPDATE training_plans SET status='active' WHERE plan_id=?", (b,))
+    # The original active plan is untouched.
+    assert plans.get_active_plan(db_path=dbp)["plan_id"] == a
+
+
+def test_adherence_immune_to_plan_edits(dbp):
+    """A missed day stays missed even if the plan rows are edited — verdicts
+    come from the activities join, not AI-authored plan fields (design H2)."""
+    plan = {
+        "plan_id": 1, "goal_type": "10k", "race_date": "2026-09-14",
+        "workouts": [_wk(date="2026-07-01", type="easy", target_distance_m=6000.0)],
+    }
+    # No activity on that date, and the day is before the frontier → missed.
+    detail = plans.build_plan_detail(plan, frontier="2026-07-08", activities_by_date={})
+    assert detail["workouts"][0]["verdict"] == "missed"
+
+
 def test_get_draft_plan(dbp):
     assert plans.get_draft_plan(db_path=dbp) is None
     pid = plans.insert_draft(_plan(), [_wk()], db_path=dbp)

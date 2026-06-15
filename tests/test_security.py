@@ -227,6 +227,17 @@ async def test_plan_endpoints_require_auth(app_with_token):
         assert (await c.post("/api/plan/abc/commit", headers=tok)).status_code == 422
 
 
+def test_plan_components_have_no_raw_html_sink():
+    """AI-authored plan strings (title/description/ability_snapshot) must never
+    reach dangerouslySetInnerHTML — escaped JSX text only (design H1)."""
+    from pathlib import Path
+
+    web_src = Path(__file__).resolve().parent.parent / "web" / "src"
+    plan_file = web_src / "components" / "TrainingPlan.tsx"
+    assert plan_file.exists(), "TrainingPlan.tsx not found"
+    assert "dangerouslySetInnerHTML" not in plan_file.read_text()
+
+
 def test_serve_refuses_non_loopback_without_token(monkeypatch):
     """Startup safety: binding to 0.0.0.0 without a token must hard-fail
     (the whole point of the audit)."""
