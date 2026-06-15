@@ -26,6 +26,11 @@ WORKOUT_TYPES = frozenset({"easy", "long", "tempo", "interval", "rest", "race", 
 MAX_WORKOUTS = 200
 RIEGEL_EXP = 1.06
 
+#: plan-quality gate: a week may grow at most ~15% over the prior week
+#: (the safe-progression rule), with a small additive slack for float edges.
+RAMP_CEILING = 1.15
+RAMP_TOLERANCE_KM = 0.5
+
 #: canonical race distances (metres); 'custom' has no canonical distance
 GOAL_DISTANCE_M = {"5k": 5000.0, "10k": 10000.0, "half": 21097.5, "full": 42195.0}
 
@@ -224,6 +229,30 @@ def weekly_mileage(workouts: list[dict], activities_by_date: dict[str, list[dict
             "actual_km": round(actual_m / 1000.0, 1),
         })
     return rows
+
+
+def score_plan(workouts: list[dict], race_date: str | None = None) -> dict:
+    """Deterministic structural quality gate for a generated plan.
+
+    Checks that weekly mileage ramps safely (≤ ~15%/week) and tapers into the
+    race (final week below the peak). Free to run — no model call — so it can
+    gate plan generation in CI alongside the LLM-authored prompt evals.
+    """
+    wk_km: dict[int, float] = {}
+    for w in workouts:
+        wk = int(w.get("week_index") or 0)
+        wk_km[wk] = wk_km.get(wk, 0.0) + (w.get("target_distance_m") or 0.0) / 1000.0
+    weeks = [wk_km[k] for k in sorted(wk_km)]
+
+    ramp_ok = all(
+        weeks[i] <= weeks[i - 1] * RAMP_CEILING + RAMP_TOLERANCE_KM
+        for i in range(1, len(weeks))
+        if weeks[i - 1] > 0
+    )
+    has_taper = len(weeks) >= 2 and weeks[-1] < max(weeks)
+    checks = {"ramp_ok": ramp_ok, "has_taper": has_taper, "nonempty": bool(workouts)}
+    score = sum(1 for v in checks.values() if v) / len(checks)
+    return {**checks, "score": round(score, 2)}
 
 
 # ===========================================================================

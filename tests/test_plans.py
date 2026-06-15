@@ -190,6 +190,34 @@ def test_weekly_mileage_rollup():
     assert rows[1] == {"week": 2, "planned_km": 8.0, "actual_km": 0.0}
 
 
+def _weeks_to_workouts(week_totals_km):
+    return [
+        {"week_index": i + 1, "target_distance_m": t * 1000.0,
+         "date": f"2026-07-{i + 1:02d}", "type": "long"}
+        for i, t in enumerate(week_totals_km)
+    ]
+
+
+def test_score_plan_good_build_and_taper():
+    s = plans.score_plan(_weeks_to_workouts([20, 23, 26, 18]))
+    assert s["ramp_ok"] and s["has_taper"] and s["score"] == 1.0
+
+
+def test_score_plan_flags_mileage_spike():
+    s = plans.score_plan(_weeks_to_workouts([20, 40]))  # 100% week-over-week jump
+    assert not s["ramp_ok"]
+
+
+def test_score_plan_flags_no_taper():
+    s = plans.score_plan(_weeks_to_workouts([20, 23, 26, 30]))  # peaks at the race week
+    assert not s["has_taper"]
+
+
+def test_score_plan_empty():
+    s = plans.score_plan([])
+    assert s["nonempty"] is False and s["score"] < 1.0
+
+
 def test_weekly_mileage_dedups_same_date():
     # two workouts share a date; actual distance for that date counts once
     workouts = [
