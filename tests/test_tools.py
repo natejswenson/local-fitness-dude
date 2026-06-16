@@ -525,3 +525,17 @@ def test_garmin_reingest_leaves_manual_row_untouched(seeded):
         ).fetchone()
     assert manual is not None  # negative-id manual row survives the upsert
     assert manual["source"] == "manual"
+
+
+def test_brief_loop_excludes_write_tools():
+    """Contract invariant: the brief loop's allow-list (read_only_tool_names)
+    is a strict subset of all tools and never includes a write or the
+    snapshot/list-observations tools, so brief generation cannot mutate data."""
+    ro = set(tools.read_only_tool_names())
+    for w in (
+        "log_manual_workout", "delete_manual_workout", "log_observation",
+        "delete_observation", "save_user_note", "update_user_note",
+        "delete_user_note", "daily_snapshot", "list_observations",
+    ):
+        assert f"mcp__{tools.SERVER_NAME}__{w}" not in ro
+    assert ro < set(tools.allowed_tool_names())
