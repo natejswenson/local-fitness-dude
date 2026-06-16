@@ -148,6 +148,18 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS observations (
+    observation_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_on     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    obs_type        TEXT NOT NULL,
+    value_num       REAL,
+    value_text      TEXT,
+    activity_id     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_obs_date ON observations(observed_on);
+CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(obs_type);
 """
 
 
@@ -177,6 +189,12 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_schema(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        # `activities.source` can't live in SCHEMA: SQLite has no
+        # `ADD COLUMN IF NOT EXISTS`, so a second executescript would raise
+        # "duplicate column". Guard the ALTER on table_info to stay idempotent.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(activities)")}
+        if "source" not in cols:
+            conn.execute("ALTER TABLE activities ADD COLUMN source TEXT DEFAULT 'garmin'")
 
 
 def last_known_daily_date(db_path: Path | None = None) -> str | None:
