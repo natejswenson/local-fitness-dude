@@ -4,6 +4,27 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-16
+
+### Added
+- **MCP server** — the fitness tools are now reachable from interactive Claude
+  sessions (Claude Code / Desktop / other local agents) over the Model Context
+  Protocol. Deployed endpoint at `/mcp/` (streamable-HTTP, behind the existing
+  `LOCAL_FITNESS_API_TOKEN` bearer gate); local `fitness mcp-stdio` for
+  auth-free laptop use. Connect: `claude mcp add --transport http fitness
+  https://fitness.home.local/mcp/ --header "Authorization: Bearer $TOKEN"`.
+  Implemented by reusing the SDK's already-built tool `Server`
+  (`web/mcp_server.py`) over a new transport — one source of truth, no schema
+  or handler duplication, so it auto-tracks `agent/tools.py::ALL_TOOLS`.
+- **`LOCAL_FITNESS_MCP_ALLOWED_HOSTS`** env var — host allowlist for the MCP
+  transport's DNS-rebinding guard (must include the served host or `/mcp/`
+  returns 421). Defaults to `fitness.home.local,127.0.0.1,localhost`.
+
+### Security
+- `/mcp` and `/mcp/*` are explicitly auth-gated in `_is_public_path` (they live
+  outside `/api/`, which defaults to public) — regression-tested in
+  `tests/test_security.py`.
+
 ## [0.1.0] - 2026-06-06
 
 First documented release. The version was already `0.1.0` in `pyproject.toml`;

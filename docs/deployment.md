@@ -41,8 +41,12 @@ services:
       # Long-lived Claude Code subscription token (so the Agent SDK
       # subprocess can authenticate without per-request API billing)
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
-      # Bearer token gating /api/* — REQUIRED when binding 0.0.0.0
+      # Bearer token gating /api/* AND /mcp/ — REQUIRED when binding 0.0.0.0
       - LOCAL_FITNESS_API_TOKEN=${LOCAL_FITNESS_API_TOKEN}
+      # MCP server host allowlist — MUST include the served host or every
+      # /mcp/ request 421s (DNS-rebinding guard). Default includes
+      # fitness.home.local; set explicitly if you serve at a different host.
+      - LOCAL_FITNESS_MCP_ALLOWED_HOSTS=${LOCAL_FITNESS_MCP_ALLOWED_HOSTS:-fitness.home.local,127.0.0.1,localhost}
     volumes:
       - ${HOME}/localrepo/local-fitness/data:/data
       - ${HOME}/localrepo/local-fitness/briefings:/briefings

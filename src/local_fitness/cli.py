@@ -49,6 +49,20 @@ def main(verbose: bool):
     _setup_logging(verbose)
 
 
+@main.command("mcp-stdio")
+def mcp_stdio():
+    """Serve the fitness tools as an MCP server over stdio (local, auth-free).
+
+    For Claude Desktop / `claude mcp add --transport stdio fitness -- \
+    uv run fitness mcp-stdio`. The deployed HTTP endpoint lives at
+    /mcp/ behind the bearer token (see web/server.py)."""
+    import asyncio
+
+    from .web import mcp_server
+
+    asyncio.run(mcp_server.run_stdio())
+
+
 @main.command()
 def setup():
     """One-time setup: init DB, store user name + Garmin credentials."""

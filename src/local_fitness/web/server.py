@@ -123,6 +123,15 @@ def _options(model: str) -> ClaudeAgentOptions:
     )
 
 
+# Standalone MCP server: the same fitness tools, reachable from interactive
+# Claude sessions (Claude Code/Desktop) over streamable-HTTP at /mcp/. Built
+# once at import; mounted below (before the SPA catch-all) and run in the
+# lifespan. See docs/plans/2026-06-16-fitness-mcp-server-design.md.
+from . import mcp_server  # noqa: E402
+
+_MCP_SERVER, _MCP_MANAGER = mcp_server.build_session_manager()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
@@ -132,7 +141,11 @@ async def lifespan(app: FastAPI):
     orphaned = db.mark_orphaned_runs()
     if orphaned:
         LOG.info("Marked %d orphaned ingest_runs row(s) at startup", orphaned)
-    yield
+    # REQUIRED: start the MCP streamable-HTTP session manager's task group, or
+    # every /mcp request raises "Task group is not initialized" (mounting alone
+    # does not start it).
+    async with _MCP_MANAGER.run():
+        yield
 
     # Cancel any pending retry timer so we don't leave a dangling task.
     global _retry_task, _sync_task
@@ -167,6 +180,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount the MCP server BEFORE any route is registered — Starlette matches
+# routes in registration order, so this must precede the SPA catch-all
+# (GET /{full_path:path}) or that would shadow GET /mcp/. The live path is
+# /mcp/ (trailing slash). Auth is enforced by require_api_token (gated via
+# _is_public_path); the bearer middleware runs before the router dispatches
+# into this mounted sub-app.
+app.mount("/mcp", app=_MCP_MANAGER.handle_request)
+
 
 # ---------- Security middleware -----------------------------------------------
 # Order: outermost wraps innermost. Defined later in the file = outer.
@@ -179,6 +200,11 @@ def _is_public_path(path: str) -> bool:
     bad-token request to 401 so the login screen can re-prompt."""
     if path == "/health":
         return True
+    # The MCP endpoint is auth-gated like /api/* (NOT public). Gate it
+    # explicitly — it lives outside the /api/ prefix, and the default below
+    # treats non-/api/ paths as public, which would expose it.
+    if path == "/mcp" or path.startswith("/mcp/"):
+        return False
     if not path.startswith("/api/"):
         return True  # SPA shell, /assets/*, etc. — handled by static routes
     return False
