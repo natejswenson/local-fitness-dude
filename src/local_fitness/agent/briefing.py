@@ -368,7 +368,12 @@ async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
     server = agent_tools.make_server()
     options = ClaudeAgentOptions(
         mcp_servers={agent_tools.SERVER_NAME: server},
-        allowed_tools=agent_tools.allowed_tool_names(),
+        # Brief generation is restricted to read-only tools: it must never be
+        # able to mutate data (log workouts/observations, delete notes), and
+        # excluding daily_snapshot/list_observations keeps the brief's tool set
+        # — and therefore its behavior — unchanged. Chat + the web agent keep
+        # the full set via allowed_tool_names().
+        allowed_tools=agent_tools.read_only_tool_names(),
         system_prompt=prompts.system_prompt(user_name),
         model=model,
         permission_mode="bypassPermissions",
