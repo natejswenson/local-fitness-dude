@@ -1,0 +1,151 @@
+version: "1.0"
+ticket: "#21"
+title: "Make the fitness MCP the primary interface"
+date: "2026-06-16"
+source: "design"
+
+api_surface:
+  tools:
+    # Added to ALL_TOOLS in agent/tools.py. Read tool exposed to chat + standalone
+    # MCP (NOT the brief loop). Write tools exposed to chat + standalone MCP only,
+    # gated off the brief loop via the read_only_tool_names() allow-list.
+    - name: daily_snapshot
+      kind: read
+      params: {}
+      returns: >
+        Assembled status dict: snapshot rows (each tagged treatment ∈
+        {baseline_delta, trend_arrow, raw}; baseline/delta_pct present only on
+        baseline_delta rows), training-load read (CTL/ATL/TSB + interpretation),
+        recent workouts in miles, active user notes.
+    - name: log_observation
+      kind: write
+      params:
+        obs_type: "str (one of OBS_TYPES whitelist)"
+        value: "float | null"
+        text: "str | null"
+        date: "str | null (defaults today)"
+        activity_id: "int | null (existence-checked against activities)"
+      returns: "stored observation row"
+    - name: list_observations
+      kind: read
+      params: { days: "int | null", obs_type: "str | null" }
+      returns: "recent observations, most-recent first"
+    - name: delete_observation
+      kind: write
+      params: { observation_id: "int" }
+      returns: "deleted row, or _err if absent"
+    - name: log_manual_workout
+      kind: write
+      params:
+        activity_type: "str"
+        duration_min: "int"
+        date: "str | null (defaults today; populates NOT NULL activities.date)"
+        distance_mi: "float | null"
+        avg_hr: "int | null"
+        training_load: "float | null"
+        name: "str | null"
+      returns: "inserted activities row (source='manual', negative id) + recompute confirmation"
+    - name: delete_manual_workout
+      kind: write
+      params: { activity_id: "int (must be < 0)" }
+      returns: "deleted row + recompute confirmation; _err if id >= 0 or absent"
+  prompts:
+    - name: coach
+      surface: standalone-mcp-only
+      arguments:
+        - { name: focus, required: false }   # list_prompts must declare PromptArgument(name="focus", required=False)
+      returns: >
+        Single user-role prompt message embedding prompts.system_prompt() (the
+        persona, which already includes user notes via render_for_prompt()) plus
+        the rendered daily snapshot. Notes appear exactly once.
+  resources:
+    - uri: "fitness://schema"
+      surface: standalone-mcp-only
+      returns: "DB tables + queryable column whitelist + run_sql usage notes, rendered from the single QUERYABLE_SCHEMA constant"
+    - uri: "fitness://brief/latest"
+      surface: standalone-mcp-only
+      returns: "most recent briefings/*.json deserialized to the Brief model and rendered to markdown; graceful 'no brief yet' when empty"
+  modules:
+    - name: agent/status.py
+      exports: ["assemble_status() -> dict"]
+    - name: agent/units.py
+      exports:
+        - "to_miles(meters)"
+        - "format_pace_min_per_mi(sec_per_km) -> '8:06'  # null/0 -> omit field, never divide"
+        - "format_duration(seconds) -> '31:00' | '1:02:30'"
+    - name: agent/tools.py
+      exports: ["read_only_tool_names() -> list[str]  # explicit read allow-list for the brief loop"]
+  env:
+    - name: LOCAL_FITNESS_DISPLAY_UNITS
+      default: "miles"
+      doc: "must be added to .env.example (commented placeholder) and docs/deployment.md; under 'km', *_mi convenience fields are suppressed (raw fields always present)"
+
+schema_changes:
+  new_tables:
+    - name: observations
+      grain: "one row = one timestamped observation the user reported, optionally about a specific workout"
+      placement: "CREATE TABLE IF NOT EXISTS inside db.py SCHEMA string (idempotent)"
+      columns:
+        observation_id: "INTEGER PRIMARY KEY AUTOINCREMENT"
+        observed_on: "TEXT NOT NULL"
+        created_at: "TEXT NOT NULL"
+        obs_type: "TEXT NOT NULL (OBS_TYPES whitelist)"
+        value_num: "REAL"
+        value_text: "TEXT"
+        activity_id: "INTEGER (soft/advisory reference to activities; NOT an enforced FK)"
+  altered_tables:
+    - name: activities
+      add_column: "source TEXT DEFAULT 'garmin'"
+      placement: >
+        Separate guarded Python step in init_schema() AFTER conn.executescript(SCHEMA):
+        PRAGMA table_info(activities) check, ALTER only if absent. Cannot live in
+        SCHEMA (no ADD COLUMN IF NOT EXISTS -> 'duplicate column' on re-run).
+
+invariants:
+  checkable:
+    - "Prompts/resources register only on the standalone Server (make_server()['instance']); obtaining the instance is already solved as in mcp_server.py:39."
+    - "Brief-generation ClaudeAgentOptions uses allowed_tools=read_only_tool_names() (explicit allow-list); a newly added tool is NOT in the brief's set unless explicitly read-only. Chat keeps the full set."
+    - "daily_snapshot is exposed to chat + standalone MCP, NOT added to the brief loop's allowed set, so brief behavior is unchanged (no scorer run required)."
+    - "Manual workouts use activity_id = MIN(MIN(activity_id), 0) - 1 (first manual id = -1; decrements thereafter). Garmin upsert only ever writes positive activityId, so no collision."
+    - "Synthetic-id allocation + insert is atomic under BEGIN IMMEDIATE; concurrent manual inserts get distinct decreasing ids."
+    - "delete_manual_workout refuses activity_id >= 0 (never deletes Garmin data)."
+    - "Manual inserts write zero rows to activity_hr_zones / activity_splits (no FK/cascade); delete leaves no orphans there."
+    - "log_observation validates a non-null activity_id against activities; delete_manual_workout nulls out observations.activity_id referencing the deleted manual id (read date -> null observations -> delete row -> recompute)."
+    - "assemble_status() emits baseline deltas only via the explicit metric->baseline-column map {rhr->rhr_60day_mean, sleep_seconds->sleep_seconds_60day_mean, avg_stress->stress_60day_mean, body_battery_max->body_battery_max_60day_mean, body_battery_min->body_battery_min_60day_mean}; never against a derived/nonexistent column. Other metrics get trend-arrow or raw only."
+    - "coach prompt embeds system_prompt() (notes included transitively); does NOT separately append render_for_prompt() — notes appear exactly once."
+    - "Read tools add formatted fields alongside raw values; raw is never dropped (correlate/run_sql unaffected)."
+    - "obs_type defined once as a module constant (OBS_TYPES); rejected obs_type returns via _err(), not a raised exception."
+    - "Prompts/resources live under /mcp, gated by _is_public_path() on HTTP — VERIFY against server.py before writing the security test."
+  testable:
+    - "After log_manual_workout, baselines.recompute(lookback_days=max(RECOMPUTE_LOOKBACK_DAYS, (today - workout_date).days + 1)) runs and CTL/ATL/TSB reflect the added load."
+    - "A backdated manual workout rewrites its own date's baseline row, not just forward dates (widened lookback)."
+    - "Re-running Garmin ingest leaves manual (negative-id) rows untouched (VERIFY: ingest INSERT OR REPLACE keyed on positive activityId)."
+    - "log_observation round-trips; list/delete work; invalid obs_type rejected; delete of absent id returns _err."
+    - "daily_snapshot miles fields + treatment tags match underlying raw data."
+    - "coach prompt embeds active user notes exactly once (regression)."
+    - "Brief generation cannot invoke a write tool (allowed_tools split)."
+    - "init_schema() is idempotent — calling it twice does not raise (guarded ALTER skipped on second call)."
+    - "On an empty/new DB, daily_snapshot and the coach prompt return a sane empty payload, never raise (assemble_status() is the throw-risk surface)."
+    - "Write tool over HTTP without bearer token -> 401 (new tests/test_security.py case)."
+    - "tests/test_smoke.py len(ALL_TOOLS) assertion updated 15 -> 21; test_mcp_server.py / test_tools.py auto-track and need no change."
+
+integration_points:
+  - "baselines.recompute(through, lookback_days) — called after manual insert/delete with widened lookback."
+  - "prompts.system_prompt() — embedded by the coach prompt; already calls notes.render_for_prompt()."
+  - "web/mcp_server.py — registers @server.list_prompts/get_prompt/list_resources/read_resource on make_server()['instance']."
+  - "web/server.py — init_schema() on boot; _is_public_path() gates /mcp on HTTP."
+  - "agent/briefing.py + agent/chat.py — ClaudeAgentOptions allowed_tools (read-only subset vs full set)."
+
+ambiguity_resolutions:
+  - q: "Does post-construction registration of prompt/resource handlers on the SDK-built Server surface capabilities in initialize?"
+    a: "Expected yes — Server.get_capabilities() inspects registered handlers dynamically at initialize time. Run as the first spike. Fallback (build the Server directly) is last-resort and must re-register SDK tools (breaks one-source-of-truth) — only if the spike fails."
+  - q: "Manual workouts feeding training load — new pipeline?"
+    a: "No. recompute() derives load from SUM(activities.training_load); a manual row with a training_load is picked up by the existing recompute. null training_load contributes 0 via COALESCE."
+  - q: "Should the write surface diverge from the agent-loop tool surface?"
+    a: "Partial divergence via allowed_tools allow-list, not a separate registration. Brief loop = read-only subset; chat + standalone MCP = full set."
+
+out_of_scope:
+  - "Editing/appending existing manual workouts (delete + re-add for v1)."
+  - "HRV / extra metrics into find_anomalies (still rhr/sleep enum)."
+  - "weekly and should-i-train prompts (trivial follow-ons once coach proves out)."
+  - "Async/queued recompute (synchronous full re-walk accepted at personal scale)."
