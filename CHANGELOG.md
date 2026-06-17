@@ -4,6 +4,29 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-17
+
+### Fixed
+- **`notes.append_note` return contract** — it hardcoded `line=-1`, so
+  `save_user_note` reported the wrong index and a follow-up update/delete using
+  it silently no-op'd. Now returns the index `read_notes()` assigns.
+- **Manual-workout partial-failure / duplicate-on-retry** — the row committed,
+  then `baselines.recompute()` ran unguarded; a recompute failure raised as if
+  the write failed, and a retry inserted a second negative-id workout,
+  double-counting training load. Recompute failure now returns partial-success
+  (`logged`/`deleted: true, recompute_failed: true`). `log_manual_workout` also
+  rejects non-positive duration and future dates; `log_observation` validates
+  `observed_on` the same way.
+- MCP `serverInfo` version + `__version__` now track the package version.
+
+### Changed
+- **Coach output renders cleanly in a narrow chat.** The `/fitness:coach`
+  prompt now carries an output-formatting contract steering the model away from
+  wide markdown tables (which wrap into mush in a monospace MCP pane) toward
+  compact per-item lines and phase-grouped sections — e.g. a training plan
+  renders as `Wk 5 · Jul 13 · Build · long 8mi · threshold 4×6min` lines, not a
+  6-column grid.
+
 ## [0.3.0] - 2026-06-16
 
 ### Added

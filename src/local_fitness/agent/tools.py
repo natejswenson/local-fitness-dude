@@ -986,7 +986,7 @@ ALL_TOOLS = [
 
 
 def make_server():
-    return create_sdk_mcp_server(name=SERVER_NAME, version="0.3.0", tools=ALL_TOOLS)
+    return create_sdk_mcp_server(name=SERVER_NAME, version="0.3.1", tools=ALL_TOOLS)
 
 
 def allowed_tool_names() -> list[str]:
