@@ -235,6 +235,65 @@ async def test_security_headers_present(app_no_token):
         assert r.headers.get("x-content-type-options") == "nosniff"
         assert r.headers.get("x-frame-options") == "DENY"
         assert r.headers.get("referrer-policy") == "no-referrer"
+        # Hardening: no stack disclosure, and HSTS present.
+        assert r.headers.get("server") == "fitness"
+        assert "max-age=" in r.headers.get("strict-transport-security", "")
+
+
+@pytest.mark.anyio
+async def test_csp_blocks_inline_scripts(app_no_token):
+    """AI-authored plan strings render in the SPA; a strict script-src is the
+    defense-in-depth against a stored-XSS / token-theft sink."""
+    transport = httpx.ASGITransport(app=app_no_token.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.get("/health")
+        csp = r.headers.get("content-security-policy", "")
+        assert "script-src 'self'" in csp
+        assert "'unsafe-inline'" not in csp.split("style-src")[0]  # not on script-src
+
+
+@pytest.mark.anyio
+async def test_plan_endpoints_require_auth(app_with_token):
+    """GET/commit/delete on /api/plan must be bearer-gated by the middleware,
+    and the int path param must reject non-int (no injection surface)."""
+    transport = httpx.ASGITransport(app=app_with_token.app)
+    tok = {"Authorization": "Bearer test-token-fixed"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        # GET
+        assert (await c.get("/api/plan")).status_code == 401
+        assert (await c.get("/api/plan", headers=tok)).status_code == 200
+        # commit
+        assert (await c.post("/api/plan/1/commit")).status_code == 401
+        # with token: 404 (no such plan) — auth passed, not 401
+        assert (await c.post("/api/plan/1/commit", headers=tok)).status_code == 404
+        # delete
+        assert (await c.delete("/api/plan/1")).status_code == 401
+        # non-int path param rejected (422) once authed
+        assert (await c.post("/api/plan/abc/commit", headers=tok)).status_code == 422
+
+
+def test_plan_components_have_no_raw_html_sink():
+    """AI-authored plan strings (title/description/ability_snapshot) must never
+    reach dangerouslySetInnerHTML — escaped JSX text only (design H1)."""
+    from pathlib import Path
+
+    web_src = Path(__file__).resolve().parent.parent / "web" / "src"
+    plan_file = web_src / "components" / "TrainingPlan.tsx"
+    assert plan_file.exists(), "TrainingPlan.tsx not found"
+    assert "dangerouslySetInnerHTML" not in plan_file.read_text()
+
+
+def test_chat_request_model_whitelist():
+    """The 3-way chat toggle must not pass an arbitrary model string to the SDK
+    — ChatRequest whitelists the three allowed IDs (design #4)."""
+    import pydantic
+
+    from local_fitness.web import server as srv
+
+    for m in ("claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"):
+        assert srv.ChatRequest(session_id="s", message="m", model=m).model == m
+    with pytest.raises(pydantic.ValidationError):
+        srv.ChatRequest(session_id="s", message="m", model="evil-model")
 
 
 def test_serve_refuses_non_loopback_without_token(monkeypatch):

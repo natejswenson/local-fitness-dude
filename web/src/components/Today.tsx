@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Activity, Bike, ChevronDown, ChevronRight, Dumbbell, Footprints,
-  HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Waves,
+  HandMetal, Loader2, Mountain, RefreshCw, Sparkles, Target, Waves,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Brief, Takeaway, Workout } from '@/lib/types'
+import type { Brief, PlanDetail, PlanWorkout, Takeaway, Workout } from '@/lib/types'
 import { ActivityHeatmap } from './ActivityHeatmap'
 import { Card, CardBody } from './Card'
 import { ChatPanel } from './ChatPanel'
 import { SyncIndicator } from './SyncIndicator'
 import { TakeawayCard } from './TakeawayCard'
-import { cn, fmtDate, fmtKm, fmtPace, fmtSeconds } from '@/lib/utils'
+import { cn, fmtDate, fmtDayLocal, fmtKm, fmtMiles, fmtPace, fmtPaceMi, fmtSeconds } from '@/lib/utils'
 
 type SeedRequest = { text: string; nonce: number }
 
@@ -146,6 +146,10 @@ export function Today() {
             <ActivityHeatmap days={365} highlightToday />
           </CardBody>
         </Card>
+
+        {/* Today's plan goal — only renders when an active plan prescribes a
+            session today. Deterministic (from /api/plan), not the LLM brief. */}
+        <TodayGoal />
 
         {/* Key Takeaways — multi-column on lg+ to use horizontal space and
             keep the brief above-the-fold. Each card is compact by default
@@ -365,4 +369,75 @@ function loadTooltip(load: number): string {
   if (load >= 80) return `Training load ${load.toFixed(0)} — hard session`
   if (load >= 30) return `Training load ${load.toFixed(0)} — moderate session`
   return `Training load ${load.toFixed(0)} — easy session`
+}
+
+/**
+ * "Today's Goal" — when an active plan prescribes a session for the local
+ * calendar day, show the target mileage + pace to hit. Deterministic, read
+ * straight from /api/plan (not the LLM brief). Renders nothing when there's
+ * no active plan or no session scheduled today.
+ */
+function isoLocal(d: Date): string {
+  return d.toLocaleDateString('en-CA') // local YYYY-MM-DD
+}
+
+function TodayGoal() {
+  // undefined = loading; null = no active plan
+  const [plan, setPlan] = useState<PlanDetail | null | undefined>(undefined)
+  useEffect(() => {
+    api.plan().then((p) => setPlan(p.active)).catch(() => setPlan(null))
+  }, [])
+
+  if (!plan) return null
+  const now = new Date()
+  const tomorrow = new Date()
+  tomorrow.setDate(now.getDate() + 1)
+  const todayISO = isoLocal(now)
+  const tomorrowISO = isoLocal(tomorrow)
+  const todayW = plan.workouts.find((w) => w.date === todayISO) ?? null
+  const tomorrowW = plan.workouts.find((w) => w.date === tomorrowISO) ?? null
+
+  // Nothing prescribed in this 2-day window (plan over, or a long rest gap) —
+  // don't add a noise card.
+  if (!todayW && !tomorrowW) return null
+
+  return (
+    <Card>
+      <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-border">
+        <GoalCell label="Today" date={todayISO} w={todayW} accent />
+        <GoalCell label="Tomorrow" date={tomorrowISO} w={tomorrowW} />
+      </div>
+    </Card>
+  )
+}
+
+function GoalCell({
+  label, date, w, accent = false,
+}: { label: string; date: string; w: PlanWorkout | null; accent?: boolean }) {
+  const isRest = w?.type === 'rest'
+  return (
+    <div className="px-5 py-4">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
+        <Target className={cn('size-3.5', accent ? 'text-accent' : 'text-muted')} />
+        {label}
+        <span className="text-faint normal-case tracking-normal">· {fmtDayLocal(date)}</span>
+      </div>
+      {!w ? (
+        <div className="mt-2 text-lg text-muted">No run scheduled</div>
+      ) : isRest ? (
+        <div className="mt-2 text-lg font-medium">Rest day</div>
+      ) : (
+        <>
+          <div className="mt-2 flex items-baseline gap-3">
+            <span className="text-2xl font-semibold tabular-nums">{fmtMiles(w.target_distance_m)}</span>
+            {w.target_pace_sec_per_km != null && (
+              <span className="text-base tabular-nums text-muted">{fmtPaceMi(w.target_pace_sec_per_km)}</span>
+            )}
+            <span className="text-sm text-muted capitalize">{w.type}</span>
+          </div>
+          <div className="mt-1 text-sm text-muted">{w.description}</div>
+        </>
+      )}
+    </div>
+  )
 }

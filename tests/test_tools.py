@@ -15,6 +15,15 @@ from local_fitness import db
 from local_fitness.agent import tools
 
 
+def test_text_emits_compact_json():
+    """Tool payloads are compact JSON (no indent) — fewer whitespace tokens
+    across the multi-turn loop; the model parses either format (design #3)."""
+    res = tools._text({"a": 1, "b": [1, 2], "c": {"d": 3}})
+    txt = res["content"][0]["text"]
+    assert "\n" not in txt and "  " not in txt
+    assert json.loads(txt) == {"a": 1, "b": [1, 2], "c": {"d": 3}}
+
+
 def call(tool, args):
     """Run a tool handler and return its decoded JSON payload."""
     result = asyncio.run(tool.handler(args))

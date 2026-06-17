@@ -1,0 +1,229 @@
+"""Tests for plans.py pure logic — validation, adherence, grading, projection."""
+from __future__ import annotations
+
+from local_fitness import plans
+
+
+# --- helpers ---------------------------------------------------------------
+
+def _wk(date="2026-07-01", seq=1, week_index=1, type="easy",
+        target_distance_m=6000.0, target_pace_sec_per_km=None,
+        target_duration_sec=None, description="6km easy"):
+    return dict(date=date, seq=seq, week_index=week_index, type=type,
+                target_distance_m=target_distance_m,
+                target_pace_sec_per_km=target_pace_sec_per_km,
+                target_duration_sec=target_duration_sec, description=description)
+
+
+def _run(dist, duration=1800, atype="running"):
+    return {"activity_type": atype, "distance_meters": dist, "duration_seconds": duration}
+
+
+def _act(atype, duration=1800, dist=0.0):
+    return {"activity_type": atype, "distance_meters": dist, "duration_seconds": duration}
+
+
+# --- Task 1.1: validation --------------------------------------------------
+
+def test_validate_rejects_empty_workouts():
+    err = plans.validate_plan_input("10k", "2026-09-14", workouts=[], created_date="2026-06-15")
+    assert err and "workout" in err.lower()
+
+
+def test_validate_rejects_bad_goal_type():
+    err = plans.validate_plan_input("marathon", "2026-09-14",
+        workouts=[_wk()], created_date="2026-06-15")
+    assert err and "goal_type" in err
+
+
+def test_validate_rejects_bad_workout_type():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(type="sprintz")], created_date="2026-06-15")
+    assert err and "type" in err
+
+
+def test_validate_rejects_nonfinite_distance():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(target_distance_m=float("inf"))], created_date="2026-06-15")
+    assert err
+
+
+def test_validate_rejects_negative_numeric():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(target_distance_m=-1.0)], created_date="2026-06-15")
+    assert err
+
+
+def test_validate_rejects_bad_date():
+    err = plans.validate_plan_input("10k", "2026-13-99",
+        workouts=[_wk()], created_date="2026-06-15")
+    assert err
+
+
+def test_validate_rejects_duplicate_date_seq():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(date="2026-07-01", seq=1), _wk(date="2026-07-01", seq=1)],
+        created_date="2026-06-15")
+    assert err and "duplicate" in err.lower()
+
+
+def test_validate_allows_same_date_distinct_seq():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(date="2026-07-01", seq=1), _wk(date="2026-07-01", seq=2)],
+        created_date="2026-06-15")
+    assert err is None
+
+
+def test_validate_rejects_workout_after_race():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(date="2026-09-20")], created_date="2026-06-15")
+    assert err
+
+
+def test_validate_rejects_workout_before_created():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(date="2026-06-01")], created_date="2026-06-15")
+    assert err
+
+
+def test_validate_rejects_too_many():
+    wks = [_wk(date=f"2026-07-{(i % 28) + 1:02d}", seq=i) for i in range(plans.MAX_WORKOUTS + 1)]
+    err = plans.validate_plan_input("10k", "2026-09-14", workouts=wks, created_date="2026-06-15")
+    assert err
+
+
+def test_validate_accepts_good_plan():
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(date="2026-07-01"),
+                  _wk(date="2026-07-02", type="rest", target_distance_m=None)],
+        created_date="2026-06-15")
+    assert err is None
+
+
+# --- Task 1.2: type-aware adherence ---------------------------------------
+
+def test_rest_day_always_compliant():
+    assert plans.classify_workout({"type": "rest"}, []) == "compliant"
+    assert plans.classify_workout({"type": "rest"}, [_run(5000)]) == "compliant"
+
+
+def test_easy_distance_thresholds():
+    w = {"type": "easy", "target_distance_m": 6000.0}
+    assert plans.classify_workout(w, [_run(6000)]) == "done"
+    assert plans.classify_workout(w, [_run(3000)]) == "partial"
+    assert plans.classify_workout(w, []) == "missed"
+
+
+def test_easy_null_target_any_run_done():
+    w = {"type": "easy", "target_distance_m": None}
+    assert plans.classify_workout(w, [_run(4000)]) == "done"
+    assert plans.classify_workout(w, []) == "missed"
+
+
+def test_multiple_runs_summed():
+    w = {"type": "long", "target_distance_m": 10000.0}
+    assert plans.classify_workout(w, [_run(6000), _run(5000)]) == "done"
+
+
+def test_interval_graded_on_duration():
+    w = {"type": "interval", "target_duration_sec": 3600}
+    assert plans.classify_workout(w, [_run(4000, duration=3600)]) == "done"
+    assert plans.classify_workout(w, [_run(2000, duration=600)]) == "partial"
+    assert plans.classify_workout(w, []) == "missed"
+
+
+def test_tempo_graded_on_duration():
+    w = {"type": "tempo", "target_duration_sec": 2400}
+    assert plans.classify_workout(w, [_run(5000, duration=2400)]) == "done"
+    assert plans.classify_workout(w, []) == "missed"
+
+
+def test_cross_matches_non_running_only():
+    w = {"type": "cross", "target_duration_sec": 1800}
+    assert plans.classify_workout(w, [_act("cycling", duration=2000)]) == "done"
+    assert plans.classify_workout(w, [_run(5000, duration=1800)]) == "missed"
+
+
+# --- Task 1.3: data-frontier grading --------------------------------------
+
+def test_future_or_unsynced_day_is_pending():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-10"}
+    assert plans.grade_workout(w, [], frontier="2026-07-08") == "pending"
+
+
+def test_day_equal_frontier_is_pending():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-08"}
+    assert plans.grade_workout(w, [], frontier="2026-07-08") == "pending"
+
+
+def test_past_day_is_graded():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-05"}
+    assert plans.grade_workout(w, [], frontier="2026-07-08") == "missed"
+
+
+def test_no_frontier_means_pending():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-05"}
+    assert plans.grade_workout(w, [], frontier=None) == "pending"
+
+
+# --- Task 1.4: Riegel + weekly mileage ------------------------------------
+
+def test_riegel_projection():
+    secs = plans.riegel_predict(best_distance_m=10000, best_time_s=3000, target_distance_m=21097.5)
+    assert 6500 < secs < 7200
+
+
+def test_riegel_none_without_effort():
+    assert plans.riegel_predict(None, None, 10000.0) is None
+    assert plans.riegel_predict(10000, 3000, None) is None
+
+
+def test_weekly_mileage_rollup():
+    workouts = [
+        {"week_index": 1, "target_distance_m": 6000.0, "date": "2026-07-01"},
+        {"week_index": 1, "target_distance_m": 10000.0, "date": "2026-07-03"},
+        {"week_index": 2, "target_distance_m": 8000.0, "date": "2026-07-08"},
+    ]
+    activities_by_date = {"2026-07-01": [_run(6000)], "2026-07-03": [_run(9000)]}
+    rows = plans.weekly_mileage(workouts, activities_by_date)
+    assert rows[0] == {"week": 1, "planned_km": 16.0, "actual_km": 15.0}
+    assert rows[1] == {"week": 2, "planned_km": 8.0, "actual_km": 0.0}
+
+
+def _weeks_to_workouts(week_totals_km):
+    return [
+        {"week_index": i + 1, "target_distance_m": t * 1000.0,
+         "date": f"2026-07-{i + 1:02d}", "type": "long"}
+        for i, t in enumerate(week_totals_km)
+    ]
+
+
+def test_score_plan_good_build_and_taper():
+    s = plans.score_plan(_weeks_to_workouts([20, 23, 26, 18]))
+    assert s["ramp_ok"] and s["has_taper"] and s["score"] == 1.0
+
+
+def test_score_plan_flags_mileage_spike():
+    s = plans.score_plan(_weeks_to_workouts([20, 40]))  # 100% week-over-week jump
+    assert not s["ramp_ok"]
+
+
+def test_score_plan_flags_no_taper():
+    s = plans.score_plan(_weeks_to_workouts([20, 23, 26, 30]))  # peaks at the race week
+    assert not s["has_taper"]
+
+
+def test_score_plan_empty():
+    s = plans.score_plan([])
+    assert s["nonempty"] is False and s["score"] < 1.0
+
+
+def test_weekly_mileage_dedups_same_date():
+    # two workouts share a date; actual distance for that date counts once
+    workouts = [
+        {"week_index": 1, "target_distance_m": 3000.0, "date": "2026-07-01", "seq": 1},
+        {"week_index": 1, "target_distance_m": 4000.0, "date": "2026-07-01", "seq": 2},
+    ]
+    activities_by_date = {"2026-07-01": [_run(5000)]}
+    rows = plans.weekly_mileage(workouts, activities_by_date)
+    assert rows[0] == {"week": 1, "planned_km": 7.0, "actual_km": 5.0}

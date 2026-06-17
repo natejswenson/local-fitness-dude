@@ -4,6 +4,38 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-17
+
+### Added
+- **Training plans.** A `/plan` tab where you pick a goal (5K / 10K / Half /
+  Full / Custom), a race date, and a target time; the agent drafts a periodized
+  plan from your Garmin history, you riff with it in chat, and commit it. The
+  committed plan is tracked (goal header with a Riegel predicted finish,
+  schedule with per-day adherence, **Target/Actual** distance + pace columns,
+  planned-vs-actual weekly mileage, CTL trajectory) and folded into the daily
+  brief's workout takeaway (recovery takes precedence over the schedule on
+  red-flag days). The Today tab shows a **Today's Goal** card read
+  deterministically from `/api/plan`.
+- Two tables (`training_plans`, `plan_workouts`) with a partial unique index
+  enforcing a single active plan at the DB level.
+- Three DRAFT-ONLY agent tools (`propose_training_plan`, `revise_training_plan`,
+  `get_training_plan_status`) — the agent only writes drafts; activating or
+  deleting a plan is a human action via REST (`GET /api/plan`,
+  `POST /api/plan/{id}/commit`, `DELETE /api/plan/{id}`).
+- `plans.score_plan` — a deterministic plan-quality gate (safe ≤15%/week ramp +
+  taper into the race).
+- `scripts/ab_brief.py` — a cross-model A/B simulation harness for prompt
+  changes (dry-run by default, hard generation cap, cost-free `--mock` mode).
+- A `Content-Security-Policy` header (`script-src 'self'`) as defense-in-depth
+  against XSS from AI-authored plan strings.
+
+### Notes
+- Integrates the training-plans feature (previously the unmerged
+  `design/training-plans` branch) alongside the MCP work from 0.2.0–0.3.1.
+  Adherence is computed from the activities join (immune to plan-row edits) and
+  graded against the data frontier so Garmin lag never shows a false "missed".
+  The reverted brief-pre-fetch experiment from that branch is not included.
+
 ## [0.3.1] - 2026-06-17
 
 ### Fixed
