@@ -138,6 +138,48 @@ async def test_api_requires_bearer_when_token_set(app_with_token):
 
 
 @pytest.mark.anyio
+async def test_mcp_endpoint_requires_bearer(app_with_token):
+    """The MCP server at /mcp/ lives OUTSIDE /api/ but must be auth-gated —
+    _is_public_path defaults non-/api/ paths to public, so a regression that
+    drops the explicit /mcp gate would silently expose the whole tool surface.
+    The 401 short-circuits in the bearer middleware before the mount, so no
+    session-manager lifespan is needed here."""
+    transport = httpx.ASGITransport(app=app_with_token.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post("/mcp/", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        assert r.status_code == 401, f"/mcp/ not gated: {r.status_code}"
+        r = await c.post("/mcp/", headers={"Authorization": "Bearer wrong"},
+                         json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        assert r.status_code == 401
+        # bare /mcp (no slash) is also gated
+        r = await c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        assert r.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_mcp_write_tool_requires_bearer(app_with_token):
+    """A WRITE tool call (log_observation) over /mcp without the bearer token
+    must 401 in the middleware BEFORE the MCP mount dispatches it — so an
+    unauthenticated client can never mutate the DB. The middleware short-circuits
+    before the session manager, so no lifespan is needed."""
+    transport = httpx.ASGITransport(app=app_with_token.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "log_observation",
+                "arguments": {"obs_type": "weight", "value": 165},
+            },
+        }
+        r = await c.post("/mcp/", json=body)
+        assert r.status_code == 401, f"unauthed write tool not gated: {r.status_code}"
+        r = await c.post("/mcp/", headers={"Authorization": "Bearer wrong"}, json=body)
+        assert r.status_code == 401
+
+
+@pytest.mark.anyio
 async def test_health_is_public(app_with_token):
     transport = httpx.ASGITransport(app=app_with_token.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
