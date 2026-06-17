@@ -31,10 +31,19 @@ agent sends to Anthropic when it writes a briefing or answers a question.
 - **Pre-computed baselines:** 60-day rolling mean/SD for resting HR, sleep,
   Body Battery, and stress, plus the Banister **CTL/ATL/TSB** training-load
   model (fitness / fatigue / form).
-- **A local Claude agent** with 15 read-only tools for querying the database.
-  It writes a structured daily briefing and supports an interactive chat that
-  shows which data it pulled.
+- **A local Claude agent** that queries the database through a set of grounded
+  tools. It writes a structured daily briefing and supports an interactive chat
+  that shows which data it pulled.
+- **An MCP server** so you can talk to your fitness data from any MCP client
+  (Claude Code, Claude Desktop, …) — not just the built-in UI. It exposes a
+  `/fitness:coach` slash-command that assembles your whole snapshot *and* the
+  coach persona in one shot, `fitness://schema` / `fitness://brief/latest`
+  resources, and a **write surface** to log manual workouts and subjective
+  notes (RPE, soreness, weight, mood…) conversationally — manual workouts feed
+  the CTL/ATL/TSB training-load model like any synced activity.
 - **A localhost web UI** (React + FastAPI) with Today, Trends, and Chat views.
+- **Runner-facing units:** distances and pace render in miles / min-per-mile by
+  default (`LOCAL_FITNESS_DISPLAY_UNITS`); raw metric values are always present.
 - **Privacy by default:** the database, briefings, and logs stay on your
   machine and are gitignored.
 
@@ -43,15 +52,20 @@ agent sends to Anthropic when it writes a briefing or answers a question.
 ```
 Garmin Connect ──pull──> SQLite (data/fitness.db) ──> baselines / CTL-ATL-TSB
                                                           │
-                                  Claude agent (15 tools) ┘
+                                      shared tool layer ──┘
                                           │
-                          ┌───────────────┼────────────────┐
-                       daily brief      chat            web UI
-                    (briefings/*.md)   (REPL/web)   (Today/Trends/Chat)
+                ┌─────────────────────────┼─────────────────────────┐
+             daily brief / chat        web UI                  MCP server
+            (briefings/*.md, REPL)  (Today/Trends/Chat)  (coach prompt, tools,
+                                                          resources, write surface)
 ```
 
-The agent is grounded: it must call a tool to read real values before making
-any claim about your data — it never invents numbers.
+The same grounded tool layer backs the brief, the chat, the web UI, and the MCP
+server — one source of truth, no duplication. The agent is grounded: it must
+call a tool to read real values before making any claim about your data — it
+never invents numbers. Over MCP, write tools are available to interactive
+clients but the brief generator is restricted to read-only tools, so an
+automated briefing can never mutate your data.
 
 ### A note on devices
 
@@ -163,6 +177,45 @@ web UI prompts for the same value and remembers it in `localStorage`.
 Cost-sensitive endpoints (`/api/chat`, `/api/brief/generate*`) are also
 rate-limited per IP as defense-in-depth against subscription drain.
 
+## MCP — talk to your data from Claude directly
+
+The fitness tools are also exposed over the [Model Context
+Protocol](https://modelcontextprotocol.io), so any MCP client can query and
+update your data without the web UI. The same tool layer backs everything, so
+the MCP surface auto-tracks the agent — no duplication.
+
+**Connect (local, no token):**
+
+```bash
+claude mcp add --transport stdio fitness -- uv run fitness mcp-stdio
+```
+
+**Connect (over the running server, token-gated):** the server also mounts the
+MCP endpoint at `/mcp/` behind the same `LOCAL_FITNESS_API_TOKEN` bearer gate.
+
+```bash
+claude mcp add --transport http fitness \
+  https://<your-host>/mcp/ --header "Authorization: Bearer $TOKEN"
+```
+
+Once connected you get:
+
+- **`/fitness:coach`** — a slash-command that assembles your full daily snapshot
+  (metrics vs. baseline, training load, recent workouts in miles) *and* the
+  coach persona + your saved preferences in one round-trip, then stays
+  conversational so you can ask follow-ups.
+- **Tools** — the read tools (status, trends, workouts, correlations, recovery
+  patterns, read-only SQL) plus a `daily_snapshot` one-call status and a
+  **write surface**: `log_observation` (RPE, soreness, weight, mood, feeling,
+  injury, notes) and `log_manual_workout` / `delete_manual_workout` for
+  non-Garmin sessions that feed the training-load model.
+- **Resources** — `fitness://schema` (queryable columns + SQL guide) and
+  `fitness://brief/latest` (your most recent brief as Markdown).
+
+The DNS-rebinding guard on the HTTP transport requires the served host to be in
+`LOCAL_FITNESS_MCP_ALLOWED_HOSTS` (defaults to common local hosts; set it to
+your host or every request 421s).
+
 ## Configuration
 
 Every variable is optional; defaults are project-relative and work in a fresh
@@ -175,7 +228,9 @@ clone. Copy `.env.example` to `.env` and set only what you need.
 | `LOCAL_FITNESS_BRIEFINGS_DIR` | Where daily briefings are written | `./briefings` |
 | `LOCAL_FITNESS_NOTES_PATH` | The agent's durable user-notes file | `./data/user_notes.md` |
 | `LOCAL_FITNESS_HOST` | Bind host for `fitness serve` | `127.0.0.1` |
-| `LOCAL_FITNESS_API_TOKEN` | Bearer token gating `/api/*` (required for non-loopback binds) | unset |
+| `LOCAL_FITNESS_API_TOKEN` | Bearer token gating `/api/*` and `/mcp/` (required for non-loopback binds) | unset |
+| `LOCAL_FITNESS_MCP_ALLOWED_HOSTS` | Host allowlist for the MCP transport's DNS-rebinding guard | common local hosts |
+| `LOCAL_FITNESS_DISPLAY_UNITS` | Runner-facing display units; non-`miles` suppresses the `*_mi` convenience fields (raw values always present) | `miles` |
 
 ## Cross-platform & Docker
 
