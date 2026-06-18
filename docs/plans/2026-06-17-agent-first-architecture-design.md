@@ -736,8 +736,15 @@ GET /api/plan             # { active, draft } — both via _assemble_plan_detail
 POST /api/plan/{id}/commit, DELETE /api/plan/{id}    # human commit / archive
 GET /api/status, /api/today, /api/training-load, /api/workouts,
     /api/metric/{name}, /api/activity-heatmap, /api/strength-volume,
-    /api/pace-efficiency, /api/notes, /api/config, /api/auth/verify, /health
+    /api/pace-efficiency, /api/workout/{activity_id}, /api/notes,
+    /api/config, /api/auth/verify, /health
+POST /api/sync ; GET /api/sync/status   # SyncIndicator on Today; kept
+POST /api/notes, DELETE /api/notes/{line_index}    # notes CRUD; kept
 ```
+**This list is illustrative, not exhaustive — the rule is: ONLY `/api/chat*` and
+`/api/brief/generate*` are removed; every other endpoint is kept untouched.** Do
+not read an endpoint's absence from this list as a removal signal (e.g.
+`/api/sync*` backs the Today sync indicator and stays).
 
 ## Invariants
 
