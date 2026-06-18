@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily "fitness brief" job for macOS launchd.
+
+  This is a TEMPLATE — `ops/install-launchd.sh` fills in __UV_BIN__ and
+  __REPO_ROOT__ with absolute paths resolved on the install host, then
+  writes the result to ~/Library/LaunchAgents/. Nothing host-specific is
+  committed; the placeholders keep the tracked file clone-portable.
+
+  The job runs `fitness brief`, which composes the day's brief via the
+  Claude-bound headless agent (in-process MCP through make_server()) and
+  persists it with briefs.save_brief(). It needs CLAUDE_CODE_OAUTH_TOKEN —
+  but the CLI auto-loads it from <repo>/.env via load_dotenv(), so the
+  token lives in .env (gitignored), NOT in this plist.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.localfitness.brief</string>
+
+    <!-- `uv run --directory <repo> fitness brief`: uv resolves the project
+         venv, and running from the repo root lets load_dotenv() find .env. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__UV_BIN__</string>
+        <string>run</string>
+        <string>--directory</string>
+        <string>__REPO_ROOT__</string>
+        <string>fitness</string>
+        <string>brief</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <!-- Daily at 06:30 local. If the Mac is asleep at 06:30, launchd runs
+         the missed job once at the next wake — the catch-up the design
+         relies on for a laptop that isn't always on. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!-- Don't fire on install/load; wait for the scheduled hour. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/logs/brief.launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/logs/brief.launchd.err.log</string>
+</dict>
+</plist>

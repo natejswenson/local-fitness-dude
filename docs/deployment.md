@@ -98,3 +98,24 @@ unless the server token rotates.
 token by default — the loopback-bind exemption keeps host-CLI dev
 ergonomic. Set `LOCAL_FITNESS_API_TOKEN` in this repo's `.env` when
 you want auth even on loopback (rare).
+
+## Scheduled brief job (the composer is a separate process)
+
+The web server runs **no Claude inference** — the daily brief is written
+out-of-band by `fitness brief`, which composes it via the Claude-bound
+headless agent (in-process MCP, no HTTP transport) and persists it through
+`briefs.save_brief()`. Schedule that command however your host runs cron-style
+jobs:
+
+- **macOS (host CLI):** `./ops/install-launchd.sh` installs a launchd agent
+  that runs `fitness brief` daily at 06:30 (catch-up at next wake if the Mac
+  was asleep). See `ops/README.md`.
+- **Linux / container host:** add a cron entry or systemd timer for
+  `uv run fitness brief` in the repo directory.
+
+Either way the job needs **`CLAUDE_CODE_OAUTH_TOKEN`** (Claude Max
+subscription — no per-token billing) in the `.env` the CLI loads. It needs
+neither `LOCAL_FITNESS_API_TOKEN` nor an MCP allowed-host, because the
+composer reaches the tools in-process rather than over the `/mcp/` endpoint.
+For the container, `CLAUDE_CODE_OAUTH_TOKEN` is already wired into the compose
+`environment:` block above; for the host CLI it goes in this repo's `.env`.
