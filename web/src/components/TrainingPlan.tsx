@@ -7,7 +7,6 @@ import { Loader2, Target, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { PlanDetail, PlanResponse, PlanWorkout } from '@/lib/types'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
-import { ChatPanel } from './ChatPanel'
 import { cn, fmtDateShort, fmtDayLocal, fmtMiles, fmtPaceMi } from '@/lib/utils'
 
 const DIST_HIT = 0.95 // within 5% of target distance counts as hit
@@ -23,8 +22,6 @@ function missedTargets(w: PlanWorkout): boolean {
     w.actual_pace_sec_per_km > w.target_pace_sec_per_km * PACE_HIT
   return distMiss || paceMiss
 }
-
-type SeedRequest = { text: string; nonce: number }
 
 const GOAL_LABELS: Record<string, string> = {
   '5k': '5K', '10k': '10K', half: 'Half Marathon', full: 'Marathon', custom: 'Custom',
@@ -51,7 +48,6 @@ function daysUntil(iso: string): number {
 
 export function TrainingPlan() {
   const [data, setData] = useState<PlanResponse | null>(null)
-  const [seedRequest, setSeedRequest] = useState<SeedRequest | null>(null)
   const [busy, setBusy] = useState(false)
 
   const refetch = useCallback(() => {
@@ -63,10 +59,6 @@ export function TrainingPlan() {
   const plan = data?.draft ?? data?.active ?? null
   const isDraft = !!data?.draft
   const hasActive = !!data?.active
-
-  function seedChat(text: string) {
-    setSeedRequest({ text, nonce: (seedRequest?.nonce ?? 0) + 1 })
-  }
 
   async function commit() {
     if (!data?.draft) return
@@ -101,10 +93,7 @@ export function TrainingPlan() {
         {data == null ? (
           <ChartLoading />
         ) : plan == null ? (
-          <EmptyState onCreate={() => seedChat(
-            'Build me a training plan. My goal is a [5K/10K/half/full] on [race date], ' +
-            'and I want to finish around [target time]. Use my recent Garmin data to set the paces.',
-          )} />
+          <EmptyState />
         ) : (
           <>
             {isDraft && (
@@ -118,14 +107,6 @@ export function TrainingPlan() {
             </div>
           </>
         )}
-
-        {/* The riff: chat drives propose/revise tools; refetch on each turn so
-            the draft calendar + charts update live. */}
-        <Card>
-          <CardBody className="pt-5">
-            <ChatPanel seedRequest={seedRequest} onTurnComplete={refetch} />
-          </CardBody>
-        </Card>
       </div>
     </div>
   )
@@ -136,7 +117,7 @@ function DraftBanner({ busy, onCommit }: { busy: boolean; onCommit: () => void }
     <div className="flex items-center justify-between gap-4 rounded-xl border border-accent-dim bg-accent/10 px-5 py-3">
       <div className="text-sm">
         <span className="font-medium text-accent">Draft</span>
-        <span className="text-muted"> — riff with the coach below, then commit to start tracking.</span>
+        <span className="text-muted"> — review the draft your coach wrote, then commit to start tracking.</span>
       </div>
       <button
         onClick={onCommit}
@@ -347,7 +328,7 @@ function FitnessTrajectoryChart({
   )
 }
 
-function EmptyState({ onCreate }: { onCreate: () => void }) {
+function EmptyState() {
   return (
     <Card>
       <CardBody className="py-12 flex flex-col items-center text-center">
@@ -356,16 +337,11 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         </div>
         <h2 className="text-lg font-semibold">No active plan</h2>
         <p className="mt-1 text-sm text-muted max-w-md">
-          Pick a goal race and target time, and the coach will draft a plan from your
-          Garmin history. Riff with it below until it's right, then commit to start
-          tracking it here and in your daily brief.
+          Open Claude (Desktop, Code, or Mobile) pointed at your fitness MCP and
+          ask it to draft a plan — e.g. "Build me a half-marathon plan for
+          &lt;date&gt; targeting &lt;time&gt;." It'll appear here as a draft to
+          review and commit.
         </p>
-        <button
-          onClick={onCreate}
-          className="mt-5 rounded-lg bg-accent text-bg text-sm font-medium px-5 py-2.5 hover:opacity-90"
-        >
-          Create a training plan
-        </button>
       </CardBody>
     </Card>
   )

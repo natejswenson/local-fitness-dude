@@ -63,18 +63,6 @@ export type Workout = {
   training_load: number | null
 }
 
-export type ChatEvent =
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; name: string; input: Record<string, unknown> }
-  | { type: 'thinking'; text: string }
-  | { type: 'done' }
-  | { type: 'error'; message: string }
-
-export type BriefStreamEvent =
-  | { type: 'takeaway'; index: number; takeaway: Takeaway }
-  | { type: 'done'; brief: Brief; data_through_date: string | null }
-  | { type: 'error'; message: string }
-
 // ---- Brief (structured Takeaways) ----
 
 export type TakeawayTone = 'positive' | 'caution' | 'critical' | 'neutral'
