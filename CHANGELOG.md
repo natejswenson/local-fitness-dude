@@ -4,6 +4,47 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-18
+
+### Changed
+- **Agent-first architecture.** The web-server process no longer runs any
+  Claude inference. All synthesis — the daily brief, conversational coaching,
+  plan drafting/revision, dashboard insights — moves to a client agent (Claude
+  Code / Desktop / Mobile) talking to the fitness MCP. The server keeps the
+  deterministic compute (baselines, CTL/ATL/TSB, plan grading, status) and
+  serves it over REST + MCP. The UI reads the same data as before; what changes
+  is *who writes the brief* and *where you converse with the coach*.
+- **Single brief write gate.** New Claude-free `agent/briefs.py` owns brief
+  I/O; `save_brief()` is the one validate-and-atomic-write path, shared by the
+  scheduled composer, the new `save_brief` MCP tool, and `ab_brief.py`.
+- **`/api/brief` falls back to the most recent brief** (`load_latest()`) when
+  today's hasn't been written, so the Today tab never goes empty while any
+  brief exists. The stale-brief banner is now informational.
+- **The UI is a viewer.** Today shows the agent-written brief (no Generate
+  button, no embedded chat); Training Plan reviews + commits a draft the agent
+  writes (drafting moves to the MCP client); Dashboards keep every chart and
+  range toggle but drop the per-panel insight chats and the model toggle.
+
+### Added
+- **`brief` MCP prompt** + `save_brief` MCP tool, so an MCP client can compose
+  and persist a brief through the same integrity gate the scheduled job uses.
+- **`GET /api/plan/draft`** — lets the plan viewer show a pending draft without
+  a chat surface.
+- **`ops/` launchd job** (`install-launchd.sh` / `uninstall-launchd.sh` +
+  plist template) that runs the daily `fitness brief` composer at 06:30 with
+  next-wake catch-up. Documented `CLAUDE_CODE_OAUTH_TOKEN` (needed only by the
+  scheduled composer, not the server) in `.env.example` + `docs/deployment.md`.
+
+### Removed
+- The server-side Claude loops: `agent/chat.py`, the `/api/chat*` and
+  `/api/brief/generate*` endpoints, the `chat`/`ask` CLI commands, and the
+  `ChatPanel` / `DashboardInsight` frontend components.
+
+### Fixed
+- Container build: build the SPA on Debian (glibc) instead of Alpine (musl) and
+  pin pnpm so Vite 8's rolldown native binding installs; harden uv/pnpm fetch
+  against a flaky build network.
+
 ## [0.4.0] - 2026-06-17
 
 ### Added
