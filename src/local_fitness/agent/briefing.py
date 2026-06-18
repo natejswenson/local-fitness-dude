@@ -10,9 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -29,242 +28,41 @@ from pydantic import ValidationError
 from .. import db
 from . import prompts
 from . import tools as agent_tools
+from .briefs import (
+    DEFAULT_BRIEFINGS_DIR,
+    _extract_json,
+    _recent_briefs_summary,
+    _salvage_takeaways,
+    _strip_inline_control_chars,
+    load_latest,
+    load_today,
+    save_brief,
+)
+from .briefs import _FENCE_OPEN_RE, _LOOSE_DECODER
 from .schemas import Brief
 
 LOG = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _default_briefings_dir() -> Path:
-    """Resolve the briefings directory. Honor LOCAL_FITNESS_BRIEFINGS_DIR
-    for container deployments where /briefings is a bind-mounted volume;
-    default to a project-relative `./briefings/` directory when unset."""
-    import os
-    override = os.environ.get("LOCAL_FITNESS_BRIEFINGS_DIR")
-    if override:
-        return Path(override)
-    return _PROJECT_ROOT / "briefings"
-
-
-DEFAULT_BRIEFINGS_DIR = _default_briefings_dir()
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-_FENCE_OPEN_RE = re.compile(r"```(?:json)?\s*")
-
-
-# Models emit JSON with raw newlines inside both string KEYS and VALUES
-# (an artefact of streamed token output being formatted with line wraps).
-# strict=False alone fixes value-side parsing but the control chars are
-# preserved in the resulting Python strings — and when they land in a
-# *key* (e.g. ``"headline\n":``), Pydantic can't find the field at all.
-# We pre-process the text to remove raw control chars from inside string
-# contexts, then parse strict-mode for safety.
-_LOOSE_DECODER = json.JSONDecoder(strict=False)
-
-
-# Valid JSON string escape chars per RFC 8259. Anything else after a
-# backslash inside a string is a parse error in strict mode; we strip
-# the rogue backslash to keep the literal char intact.
-_VALID_JSON_ESCAPES = set('"\\/bfnrtu')
-
-
-def _strip_inline_control_chars(text: str) -> str:
-    """Sanitize JSON strings against the failure modes models routinely
-    emit when wrapping output:
-
-    1. **Raw control chars (< 0x20) inside strings.** Strict JSON
-       requires these to be escaped as ``\\n`` / ``\\t`` etc.; the model
-       sometimes emits literal ones. Stripped.
-    2. **Invalid backslash escapes inside strings.** Model writes
-       ``\\|`` or ``\\-`` thinking it's escaping markdown (it isn't —
-       these aren't JSON escapes). The rogue backslash is dropped so
-       the following char survives as a literal.
-
-    Outside string contexts both are valid JSON whitespace / structural
-    chars and are preserved.
-    """
-    out: list[str] = []
-    in_string = False
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if not in_string:
-            out.append(ch)
-            if ch == '"':
-                in_string = True
-            i += 1
-            continue
-        # Inside a string from here.
-        if ch == "\\":
-            if i + 1 < n:
-                nxt = text[i + 1]
-                if nxt in _VALID_JSON_ESCAPES:
-                    # Legit escape — copy both chars verbatim.
-                    out.append(ch)
-                    out.append(nxt)
-                    i += 2
-                    continue
-                # Invalid escape — drop the backslash, keep the char.
-                # If the char is itself a control char, skip it too.
-                if ord(nxt) >= 0x20:
-                    out.append(nxt)
-                i += 2
-                continue
-            # Trailing backslash with nothing after — just drop it.
-            i += 1
-            continue
-        if ch == '"':
-            in_string = False
-            out.append(ch)
-            i += 1
-            continue
-        if ord(ch) < 0x20:
-            i += 1  # drop raw control char inside the string
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-# Numeric literals with stray whitespace (model wrap artefacts) — outside
-# string contexts where ``_strip_inline_control_chars`` deliberately
-# leaves whitespace alone. Tightens cases like ``1 .1`` → ``1.1`` and
-# ``10 112`` → ``10112``. Conservative: only collapses whitespace
-# *between* digits or between a digit and ``.`` to avoid mangling legit
-# JSON whitespace.
-_NUM_GAP_RE = re.compile(r"(?<=\d)\s+(?=[\d.])|(?<=\.)\s+(?=\d)")
-
-
-def _fix_numeric_gaps_outside_strings(text: str) -> str:
-    """Apply ``_NUM_GAP_RE`` only to characters that fall outside string
-    contexts (so we never touch user prose with numbers and spaces in it).
-    """
-    parts: list[str] = []
-    buf: list[str] = []
-    in_string = False
-    escaped = False
-    for ch in text:
-        if in_string:
-            buf.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-                parts.append("".join(buf))
-                buf = []
-            continue
-        if ch == '"':
-            if buf:
-                parts.append(_NUM_GAP_RE.sub("", "".join(buf)))
-                buf = []
-            buf.append(ch)
-            in_string = True
-            continue
-        buf.append(ch)
-    if buf:
-        if in_string:
-            parts.append("".join(buf))
-        else:
-            parts.append(_NUM_GAP_RE.sub("", "".join(buf)))
-    return "".join(parts)
-
-
-def _salvage_takeaways(payload: dict) -> dict:
-    """If the model emitted a deviating top-level shape, try to recover
-    the takeaways list before failing.
-
-    Failure mode this exists for: a user note like "show a snapshot
-    table at the top" can convince the model to wrap the brief in a
-    `{snapshot: ..., takeaways: [...]}` or even bury takeaways inside
-    a sibling object. The schema is non-negotiable per the prompt, but
-    salvaging is much better than 500'ing the user's regen.
-
-    Returns ``payload`` unchanged when it already has a top-level
-    ``takeaways`` list. Otherwise scans nested values for the first
-    list-of-dicts that *looks* like a takeaways array (each item has at
-    least a ``headline`` key) and returns ``{"takeaways": that_list}``,
-    preserving any compatible top-level metadata (date, user_name).
-    """
-    if not isinstance(payload, dict):
-        return payload
-    if isinstance(payload.get("takeaways"), list):
-        return payload
-
-    def looks_like_takeaways(val: object) -> bool:
-        return (
-            isinstance(val, list)
-            and len(val) > 0
-            and all(isinstance(item, dict) and "headline" in item for item in val)
-        )
-
-    found: list | None = None
-
-    def walk(node: object) -> None:
-        nonlocal found
-        if found is not None:
-            return
-        if looks_like_takeaways(node):
-            found = node  # type: ignore[assignment]
-            return
-        if isinstance(node, dict):
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(payload)
-    if found is None:
-        return payload  # nothing recognizable; let validation fail downstream
-    LOG.warning(
-        "Brief output deviated from schema; salvaged %d takeaways from a "
-        "nested structure. Tighten prompt or extend schema if this recurs.",
-        len(found),
-    )
-    salvaged: dict = {"takeaways": found}
-    for k in ("date", "user_name", "generated_at"):
-        v = payload.get(k)
-        if isinstance(v, str):
-            salvaged[k] = v
-    return salvaged
-
-
-def _extract_json(text: str) -> dict:
-    """Pull a JSON object out of the agent's response — agents sometimes
-    wrap output in a ```json fence even when told not to. Try direct parse,
-    then code-fence, then bracket scan. Raises if nothing parses.
-
-    On a parsed object that lacks a top-level ``takeaways`` field, tries
-    to salvage the takeaways from a nested structure before returning —
-    a defense against user notes accidentally convincing the model to
-    invent new top-level keys.
-    """
-    cleaned = _fix_numeric_gaps_outside_strings(_strip_inline_control_chars(text.strip()))
-    try:
-        return _salvage_takeaways(_LOOSE_DECODER.decode(cleaned))
-    except json.JSONDecodeError:
-        pass
-    m = _FENCE_RE.search(cleaned)
-    if m:
-        try:
-            return _salvage_takeaways(_LOOSE_DECODER.decode(m.group(1).strip()))
-        except json.JSONDecodeError:
-            pass
-    # Last resort: find first { and matching }
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            return _salvage_takeaways(_LOOSE_DECODER.decode(cleaned[start : end + 1]))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"could not parse JSON from agent response: {e}\n\n{cleaned[:500]}")
-    raise ValueError(f"no JSON found in agent response: {cleaned[:500]}")
+# Back-compat re-exports: existing callers import these from `briefing`
+# (server.py, mcp_server.py, ab_brief.py). They now live in `briefs.py`; the
+# composer persists THROUGH `briefs.save_brief` and reads via these helpers.
+# Keep the names importable here so those callers don't break (later waves
+# repoint them directly at `briefs`).
+__all__ = [
+    "DEFAULT_BRIEFINGS_DIR",
+    "DEFAULT_MODEL",
+    "load_today",
+    "load_latest",
+    "save_brief",
+    "_recent_briefs_summary",
+    "_salvage_takeaways",
+    "_extract_json",
+    "_strip_inline_control_chars",
+    "generate_streaming",
+    "generate_and_save",
+]
 
 
 def _iter_partial_takeaways(text: str, skip_count: int):
@@ -306,45 +104,6 @@ def _iter_partial_takeaways(text: str, skip_count: int):
         if found > skip_count and isinstance(obj, dict):
             yield obj
         pos = end
-
-
-RECENT_BRIEFS_LOOKBACK_DAYS = 7
-
-
-def _recent_briefs_summary(today: date | None = None, days: int = RECENT_BRIEFS_LOOKBACK_DAYS) -> str:
-    """Return a compact rendering of the last ``days`` saved briefs (excluding today).
-
-    Used to give the briefing agent continuity across days — so today's brief
-    can reference what it told {user_name} yesterday/last week and call out
-    follow-through (or the lack of it). Returns "" when there's no history.
-    """
-    today = today or date.today()
-    if not DEFAULT_BRIEFINGS_DIR.exists():
-        return ""
-    lines: list[str] = []
-    for offset in range(1, days + 1):
-        d = today - timedelta(days=offset)
-        path = DEFAULT_BRIEFINGS_DIR / f"{d.isoformat()}.json"
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        takeaways = data.get("takeaways") or []
-        if not takeaways:
-            continue
-        lines.append(f"{d.isoformat()}:")
-        for tk in takeaways:
-            headline = (tk.get("headline") or "").strip()
-            tone = (tk.get("tone") or "").strip()
-            summary = (tk.get("summary") or "").strip()
-            if not headline:
-                continue
-            lines.append(f"  - [{tone}] {headline}")
-            if summary:
-                lines.append(f"    {summary}")
-    return "\n".join(lines)
 
 
 async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
@@ -548,20 +307,29 @@ async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
     payload.setdefault("date", date.today().isoformat())
     payload.setdefault("user_name", user_name)
     payload["generated_at"] = datetime.now().isoformat()
+
+    if save:
+        # Persist through the single write gate. `save_brief` re-stamps,
+        # validates ONCE, and returns the validated Brief — we emit THAT object
+        # so the on-disk and streamed briefs are identical (no parallel
+        # in-composer validate on the save path).
+        try:
+            result = save_brief(payload)
+        except ValidationError as e:
+            LOG.error("Brief JSON failed validation: %s\n\nRaw: %s", e, raw[:1000])
+            yield {"type": "error", "message": f"Brief failed validation: {e}"}
+            return
+        yield {"type": "done", "brief": result["brief"].model_dump()}
+        return
+
+    # save=False (eval/scoring): validate locally to produce the done Brief
+    # without persisting.
     try:
         brief = Brief.model_validate(payload)
     except ValidationError as e:
         LOG.error("Brief JSON failed validation: %s\n\nRaw: %s", e, raw[:1000])
         yield {"type": "error", "message": f"Brief failed validation: {e}"}
         return
-
-    if save:
-        out_dir = DEFAULT_BRIEFINGS_DIR
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{date.today().isoformat()}.json"
-        out_path.write_text(brief.model_dump_json(indent=2), encoding="utf-8")
-        LOG.info("Wrote brief to %s", out_path)
-
     yield {"type": "done", "brief": brief.model_dump()}
 
 
@@ -579,21 +347,26 @@ async def _generate(model: str = DEFAULT_MODEL) -> Brief:
     return Brief.model_validate(last_brief)
 
 
-def generate_and_save(out_dir: Path | None = None, model: str = DEFAULT_MODEL) -> Path:
-    """CLI / non-streaming entry. The streaming generator already saves to
-    DEFAULT_BRIEFINGS_DIR; if a different ``out_dir`` is requested we write
-    a second copy there."""
-    brief = asyncio.run(_generate(model=model))
-    target_dir = out_dir or DEFAULT_BRIEFINGS_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{date.today().isoformat()}.json"
-    path.write_text(brief.model_dump_json(indent=2), encoding="utf-8")
-    return path
+def generate_and_save(model: str = DEFAULT_MODEL) -> Path:
+    """CLI / non-streaming entry. Runs the composer with ``save=True`` so the
+    brief is persisted exactly once, through ``briefs.save_brief`` (inside
+    ``generate_streaming``). Returns the path ``save_brief`` wrote so
+    ``cli.py``'s "Brief written to: {path}" echo keeps working."""
+    last_path: str | None = None
+    last_brief: dict | None = None
 
+    async def _run() -> None:
+        nonlocal last_brief
+        async for evt in generate_streaming(model=model, save=True):
+            if evt["type"] == "done":
+                last_brief = evt["brief"]
+            elif evt["type"] == "error":
+                raise ValueError(evt["message"])
 
-def load_today(out_dir: Path | None = None) -> Brief | None:
-    out_dir = out_dir or DEFAULT_BRIEFINGS_DIR
-    path = out_dir / f"{date.today().isoformat()}.json"
-    if not path.exists():
-        return None
-    return Brief.model_validate_json(path.read_text(encoding="utf-8"))
+    asyncio.run(_run())
+    if last_brief is None:
+        raise ValueError("Brief generation completed without a done event")
+    # The save path wrote briefings/<date>.json; reconstruct the same path the
+    # gate produced (date is server-stamped to today inside save_brief).
+    last_path = str(DEFAULT_BRIEFINGS_DIR / f"{last_brief['date']}.json")
+    return Path(last_path)

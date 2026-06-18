@@ -24,9 +24,9 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .. import db
-from ..agent import prompts
+from ..agent import briefs, prompts
 from ..agent import tools as agent_tools
-from ..agent.briefing import DEFAULT_BRIEFINGS_DIR
+from ..agent.briefs import DEFAULT_BRIEFINGS_DIR
 from ..agent.schemas import Brief
 from ..agent.status import assemble_status
 
@@ -176,6 +176,76 @@ def _latest_brief_markdown() -> str:
     return empty
 
 
+def _coach_prompt(arguments: dict[str, str] | None) -> types.GetPromptResult:
+    """The running-coach persona pre-filled with today's snapshot."""
+    # The persona ALREADY embeds the user's saved notes via
+    # render_for_prompt(); do NOT append them again here.
+    persona = prompts.system_prompt(_user_name())
+    snapshot = _render_status(assemble_status())
+    text = (
+        f"{persona}\n\n"
+        f"# Today's data (already retrieved — no tool call needed for this)\n"
+        f"{snapshot}"
+    )
+    if arguments:
+        focus = (arguments.get("focus") or "").strip()
+        if focus:
+            text += (
+                f"\n# Focus\n{_user_name()} wants you to focus on: {focus}. "
+                f"Lead with that.\n"
+            )
+    return types.GetPromptResult(
+        description="Running-coach persona with today's fitness snapshot.",
+        messages=[
+            types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text=text),
+            )
+        ],
+    )
+
+
+def _daily_step_goal() -> int:
+    """Source daily_step_goal exactly like briefing.generate_streaming does
+    (settings → parse-with-fallback)."""
+    try:
+        return int(db.get_setting("daily_step_goal", "10000") or "10000")
+    except ValueError:
+        return 10000
+
+
+def _brief_prompt() -> types.GetPromptResult:
+    """The briefing instructions + today's assembled data + recent-brief
+    continuity, resolved IN-PROCESS exactly as the brief loop did, so an agent
+    can compose a schema-valid Brief and persist it via the save_brief tool.
+
+    One source of truth: the instructions/schema come from
+    ``prompts.briefing_prompt()`` (the same text the brief composer uses), and
+    the continuity from ``briefs._recent_briefs_summary()`` — no Claude loop in
+    the import graph."""
+    user_name = _user_name()
+    recent_briefs_summary = briefs._recent_briefs_summary()
+    instructions = prompts.briefing_prompt(
+        user_name, _daily_step_goal(), recent_briefs_summary
+    )
+    snapshot = _render_status(assemble_status())
+    text = (
+        f"{instructions}\n\n"
+        "Compose the brief as JSON per the schema above, then call the "
+        "`save_brief` tool with it to persist. Today's snapshot for "
+        f"grounding:\n\n{snapshot}"
+    )
+    return types.GetPromptResult(
+        description="Compose + save today's brief.",
+        messages=[
+            types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text=text),
+            )
+        ],
+    )
+
+
 def _register_prompts_and_resources(instance: Server) -> None:
     """Register the coach prompt + the schema/brief resources on the low-level
     Server BEFORE it's returned, so BOTH the stdio and streamable-HTTP
@@ -202,40 +272,28 @@ def _register_prompts_and_resources(instance: Server) -> None:
                         ),
                     )
                 ],
-            )
+            ),
+            types.Prompt(
+                name="brief",
+                description=(
+                    "Compose today's structured JSON brief (the Brief schema). "
+                    "Resolves today's data + recent-brief continuity "
+                    "server-side; after composing, call the save_brief tool to "
+                    "persist it."
+                ),
+                arguments=[],
+            ),
         ]
 
     @instance.get_prompt()
     async def _get_prompt(
         name: str, arguments: dict[str, str] | None
     ) -> types.GetPromptResult:
-        if name != "coach":
-            raise ValueError(f"unknown prompt: {name!r}")
-        # The persona ALREADY embeds the user's saved notes via
-        # render_for_prompt(); do NOT append them again here.
-        persona = prompts.system_prompt(_user_name())
-        snapshot = _render_status(assemble_status())
-        text = (
-            f"{persona}\n\n"
-            f"# Today's data (already retrieved — no tool call needed for this)\n"
-            f"{snapshot}"
-        )
-        if arguments:
-            focus = (arguments.get("focus") or "").strip()
-            if focus:
-                text += (
-                    f"\n# Focus\n{_user_name()} wants you to focus on: {focus}. "
-                    f"Lead with that.\n"
-                )
-        return types.GetPromptResult(
-            description="Running-coach persona with today's fitness snapshot.",
-            messages=[
-                types.PromptMessage(
-                    role="user",
-                    content=types.TextContent(type="text", text=text),
-                )
-            ],
-        )
+        if name == "coach":
+            return _coach_prompt(arguments)
+        if name == "brief":
+            return _brief_prompt()
+        raise ValueError(f"unknown prompt: {name!r}")
 
     @instance.list_resources()
     async def _list_resources() -> list[types.Resource]:

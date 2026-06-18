@@ -638,6 +638,56 @@ def test_garmin_reingest_leaves_manual_row_untouched(seeded):
     assert manual["source"] == "manual"
 
 
+# --- save_brief tool -------------------------------------------------------
+
+
+def _valid_takeaway():
+    return {
+        "headline": "Easy 5k on tap",
+        "summary": "RHR steady, TSB positive — green light to run.",
+        "tone": "positive",
+        "details": "Full markdown deep-dive.",
+    }
+
+
+@pytest.fixture
+def briefs_tmp(tmp_path, monkeypatch):
+    """Point the briefs gate + DB at a tmp dir so save_brief never touches
+    the real briefings/ or dev DB."""
+    from local_fitness.agent import briefs
+
+    out = tmp_path / "briefings"
+    monkeypatch.setattr(briefs, "DEFAULT_BRIEFINGS_DIR", out)
+    p = tmp_path / "fitness.db"
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", p)
+    db.init_schema(p)
+    return out
+
+
+def test_save_brief_tool_valid_writes_file_and_no_brief_key(briefs_tmp):
+    payload, err = call(tools.save_brief, {"brief": {"takeaways": [_valid_takeaway()]}})
+    assert not err
+    today = date.today().isoformat()
+    # The tool returns ONLY scalars — the pydantic Brief object is dropped so
+    # json.dumps can't raise (and no model leaks across the wire).
+    assert set(payload.keys()) == {"saved", "date", "path"}
+    assert "brief" not in payload
+    assert payload["saved"] is True
+    assert payload["date"] == today
+    # A file really landed for the valid case.
+    assert (briefs_tmp / f"{today}.json").exists()
+    assert payload["path"] == str(briefs_tmp / f"{today}.json")
+
+
+def test_save_brief_tool_invalid_is_error(briefs_tmp):
+    # Empty takeaways → schema validation failure → is_error with a message.
+    payload, err = call(tools.save_brief, {"brief": {"takeaways": []}})
+    assert err
+    assert "validation" in payload["error"].lower()
+    # Nothing written on rejection.
+    assert list(briefs_tmp.glob("*.json")) == []
+
+
 def test_brief_loop_excludes_write_tools():
     """Contract invariant: the brief loop's allow-list (read_only_tool_names)
     is a strict subset of all tools and never includes a write or the

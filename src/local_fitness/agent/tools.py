@@ -12,9 +12,10 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from pydantic import ValidationError
 
 from .. import db, notes, plans
-from . import units
+from . import briefs, units
 
 
 SERVER_NAME = "fitness"
@@ -1099,6 +1100,26 @@ async def get_training_plan_status(_args: dict) -> dict:
     return _text(plans.build_plan_status(active, frontier, activities_by_date, today))
 
 
+@tool(
+    "save_brief",
+    "Persist a composed daily brief. Pass the brief as JSON matching the Brief "
+    "schema (a `takeaways` list; date/user_name/generated_at are stamped "
+    "server-side). The server validates against the schema and atomically "
+    "writes briefings/<today>.json — invalid briefs are rejected. Use this "
+    "after composing the brief via the `brief` prompt.",
+    {"brief": dict},
+)
+async def save_brief(args: dict) -> dict:
+    # Thin wrapper over briefs.save_brief (the single integrity gate). DROP the
+    # returned `brief` pydantic object — only the {saved,date,path} scalars are
+    # _text-wrapped (a pydantic Brief through json.dumps would raise TypeError).
+    try:
+        result = briefs.save_brief(args["brief"])
+    except ValidationError as e:
+        return _err(f"brief failed schema validation: {e}")
+    return _text({"saved": True, "date": result["date"], "path": result["path"]})
+
+
 ALL_TOOLS = [
     get_today_status,
     get_metric,
@@ -1124,6 +1145,7 @@ ALL_TOOLS = [
     propose_training_plan,
     revise_training_plan,
     get_training_plan_status,
+    save_brief,
 ]
 
 

@@ -72,6 +72,27 @@ async def test_plan_populated(srv):
 
 
 @pytest.mark.anyio
+async def test_plan_draft_empty(srv):
+    async with _client(srv) as c:
+        r = await c.get("/api/plan/draft")
+    assert r.status_code == 200
+    assert r.json() == {"draft": None}
+
+
+@pytest.mark.anyio
+async def test_plan_draft_populated(srv):
+    _seed_draft(db.DEFAULT_DB_PATH)
+    async with _client(srv) as c:
+        r = await c.get("/api/plan/draft")
+    assert r.status_code == 200
+    draft = r.json()["draft"]
+    assert draft is not None
+    assert draft["goal_type"] == "10k"
+    assert draft["status"] == "draft"
+    assert draft["workouts"]  # assembled detail includes the schedule
+
+
+@pytest.mark.anyio
 async def test_commit_endpoint(srv):
     pid = _seed_draft(db.DEFAULT_DB_PATH)
     async with _client(srv) as c:

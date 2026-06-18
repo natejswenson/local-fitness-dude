@@ -51,6 +51,7 @@ from pydantic import BaseModel, field_validator
 
 from .. import db, notes as user_notes_mod, plans as plans_mod
 from ..agent import briefing as briefing_mod
+from ..agent import briefs
 from ..agent import prompts
 from ..agent import tools as agent_tools
 from ..ingest import baselines as baselines_mod
@@ -449,6 +450,17 @@ async def api_plan() -> dict:
     }
 
 
+@app.get("/api/plan/draft")
+async def api_plan_draft() -> dict:
+    """Return the pending DRAFT plan (assembled), or null when none.
+
+    A thin convenience endpoint mirroring the ``draft`` field of
+    ``/api/plan`` so the TrainingPlan viewer can poll the draft cheaply
+    and keep the draft-review flow explicit.
+    """
+    return {"draft": _assemble_plan_detail(plans_mod.get_draft_plan())}
+
+
 @app.post("/api/plan/{plan_id}/commit")
 async def api_plan_commit(plan_id: int) -> dict:
     try:
@@ -837,7 +849,7 @@ async def api_brief() -> dict:
     data has landed since the brief was generated and offer a
     regenerate prompt.
     """
-    brief = briefing_mod.load_today()
+    brief = briefs.load_today() or briefs.load_latest()
     data_through = db.last_known_daily_date()
     if brief:
         return {
