@@ -6,10 +6,17 @@ import {
 import { api } from '@/lib/api'
 import type { Brief, PlanDetail, PlanWorkout, Workout } from '@/lib/types'
 import { ActivityHeatmap } from './ActivityHeatmap'
+import { AskCoach } from './AskCoach'
 import { Card, CardBody } from './Card'
 import { SyncIndicator } from './SyncIndicator'
 import { TakeawayCard } from './TakeawayCard'
 import { cn, fmtDate, fmtDayLocal, fmtKm, fmtMiles, fmtPace, fmtPaceMi, fmtSeconds } from '@/lib/utils'
+
+// Paste-ready prompt for the MCP coach (Claude Desktop / Code / Mobile). The
+// AskCoach button copies this to the clipboard; the agent pulls fresh data and
+// writes the brief back through the save_brief tool.
+const FRESH_BRIEF_PROMPT =
+  'Pull my latest fitness data and write me a fresh daily brief.'
 
 export function Today() {
   const [brief, setBrief] = useState<Brief | null>(null)
@@ -68,8 +75,9 @@ export function Today() {
           >
             <span className="inline-flex items-start gap-2">
               <Sparkles className="size-4 mt-0.5 shrink-0" />
-              <span>Newer data landed since this brief was written — ask your coach for a fresh one</span>
+              <span>Newer data landed since this brief was written.</span>
             </span>
+            <AskCoach prompt={FRESH_BRIEF_PROMPT} label="Get a fresh brief" className="shrink-0 self-start sm:self-auto" />
           </div>
         )}
 
@@ -112,10 +120,9 @@ export function Today() {
           </div>
         ) : (
           <Card>
-            <div className="p-8 text-center">
-              <div className="text-sm text-muted">
-                No brief yet — ask your coach to write one.
-              </div>
+            <div className="p-8 flex flex-col items-center gap-3 text-center">
+              <div className="text-sm text-muted">No brief yet for today.</div>
+              <AskCoach prompt={FRESH_BRIEF_PROMPT} label="Ask your coach to write one" />
             </div>
           </Card>
         )}
@@ -253,7 +260,15 @@ export function Today() {
 
 function isBriefStale(brief: Brief | null, dataThrough: string | null): boolean {
   if (!brief?.generated_at || !dataThrough) return false
-  return brief.generated_at.slice(0, 10) < dataThrough
+  // Clamp the data frontier to the VIEWER's local "today". The server runs in
+  // UTC, so its daily pull can create a row for a day that hasn't finished in
+  // the user's timezone (a "tomorrow" phantom). That future-dated row is not
+  // genuinely "newer data" and must never mark a just-written brief stale —
+  // otherwise the banner can never clear in the evening. The browser knows the
+  // real local day, so clamp here.
+  const localToday = isoLocal(new Date())
+  const frontier = dataThrough < localToday ? dataThrough : localToday
+  return brief.generated_at.slice(0, 10) < frontier
 }
 
 function timeOfDayGreeting(): string {

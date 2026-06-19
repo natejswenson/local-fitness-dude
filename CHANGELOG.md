@@ -63,9 +63,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `run_sql` no longer echoes raw SQLite exception strings.
 
 ### Fixed
+- **Stale-brief banner could never clear in the evening.** The server runs in
+  UTC, so its daily pull writes a `daily_metrics` row for "tomorrow" once UTC
+  rolls over — making `data_through_date` one day ahead of a just-written
+  brief's local date, so `isBriefStale` stayed true forever. The banner now
+  clamps the data frontier to the *viewer's* local day: a row for a day that
+  hasn't finished in your timezone isn't "newer data." Genuinely stale briefs
+  still flag.
 - Container build: build the SPA on Debian (glibc) instead of Alpine (musl) and
   pin pnpm so Vite 8's rolldown native binding installs; harden uv/pnpm fetch
   against a flaky build network.
+
+### Added
+- **"Ask your coach" is now an actionable button.** The brief banner, the
+  empty-brief state, and the empty training-plan state each copy a ready-to-paste
+  MCP prompt to the clipboard (a web page can't launch a Claude client, so it
+  hands you the prompt to paste into Desktop / Code / Mobile).
 
 ## [0.4.0] - 2026-06-17
 

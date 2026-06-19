@@ -6,8 +6,15 @@ import {
 import { Loader2, Target, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { PlanDetail, PlanResponse, PlanWorkout } from '@/lib/types'
+import { AskCoach } from './AskCoach'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
 import { cn, fmtDateShort, fmtDayLocal, fmtMiles, fmtPaceMi } from '@/lib/utils'
+
+// Paste-ready prompt for the MCP coach. AskCoach copies it to the clipboard;
+// the agent drafts the plan via propose_training_plan and it lands here.
+const DRAFT_PLAN_PROMPT =
+  'Build me a training plan from my recent Garmin data. My goal is a ' +
+  '[5K/10K/half/full] on [race date], targeting about [finish time].'
 
 const DIST_HIT = 0.95 // within 5% of target distance counts as hit
 const PACE_HIT = 1.05 // within 5% slower than target pace counts as hit
@@ -337,11 +344,15 @@ function EmptyState() {
         </div>
         <h2 className="text-lg font-semibold">No active plan</h2>
         <p className="mt-1 text-sm text-muted max-w-md">
-          Open Claude (Desktop, Code, or Mobile) pointed at your fitness MCP and
-          ask it to draft a plan — e.g. "Build me a half-marathon plan for
-          &lt;date&gt; targeting &lt;time&gt;." It'll appear here as a draft to
-          review and commit.
+          Your coach drafts plans from Claude (Desktop, Code, or Mobile) pointed
+          at your fitness MCP. Ask it for a plan and it'll appear here as a draft
+          to review and commit.
         </p>
+        <AskCoach
+          prompt={DRAFT_PLAN_PROMPT}
+          label="Ask your coach to draft a plan"
+          className="mt-5"
+        />
       </CardBody>
     </Card>
   )
