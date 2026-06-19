@@ -4,6 +4,139 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-18
+
+### Changed
+- **Agent-first architecture.** The web-server process no longer runs any
+  Claude inference. All synthesis — the daily brief, conversational coaching,
+  plan drafting/revision, dashboard insights — moves to a client agent (Claude
+  Code / Desktop / Mobile) talking to the fitness MCP. The server keeps the
+  deterministic compute (baselines, CTL/ATL/TSB, plan grading, status) and
+  serves it over REST + MCP. The UI reads the same data as before; what changes
+  is *who writes the brief* and *where you converse with the coach*.
+- **Single brief write gate.** New Claude-free `agent/briefs.py` owns brief
+  I/O; `save_brief()` is the one validate-and-atomic-write path, shared by the
+  scheduled composer, the new `save_brief` MCP tool, and `ab_brief.py`.
+- **`/api/brief` falls back to the most recent brief** (`load_latest()`) when
+  today's hasn't been written, so the Today tab never goes empty while any
+  brief exists. The stale-brief banner is now informational.
+- **The UI is a viewer.** Today shows the agent-written brief (no Generate
+  button, no embedded chat); Training Plan reviews + commits a draft the agent
+  writes (drafting moves to the MCP client); Dashboards keep every chart and
+  range toggle but drop the per-panel insight chats and the model toggle.
+
+### Added
+- **`brief` MCP prompt** + `save_brief` MCP tool, so an MCP client can compose
+  and persist a brief through the same integrity gate the scheduled job uses.
+- **`GET /api/plan/draft`** — lets the plan viewer show a pending draft without
+  a chat surface.
+- **`ops/` launchd job** (`install-launchd.sh` / `uninstall-launchd.sh` +
+  plist template) that runs the daily `fitness brief` composer at 06:30 with
+  next-wake catch-up. Documented `CLAUDE_CODE_OAUTH_TOKEN` (needed only by the
+  scheduled composer, not the server) in `.env.example` + `docs/deployment.md`.
+
+### Removed
+- The server-side Claude loops: `agent/chat.py`, the `/api/chat*` and
+  `/api/brief/generate*` endpoints, the `chat`/`ask` CLI commands, and the
+  `ChatPanel` / `DashboardInsight` frontend components.
+
+### Security
+- **`run_sql` is now read-only at the SQLite engine, not by keyword matching.**
+  The MCP `run_sql` tool opens a `mode=ro` connection (`db.connect_readonly`), so
+  any INSERT/UPDATE/DELETE/DDL fails at the engine regardless of phrasing. This
+  closes a bypass where a `WITH`-prefixed query with a newline/tab after the
+  write keyword (`WITH a AS (SELECT 1)\ndelete\nfrom …`) slipped the prefix and
+  space-padded-keyword denylist and committed. The denylist stays as
+  defense-in-depth.
+- **`run_sql` is time-bounded and non-blocking.** A `set_progress_handler`
+  deadline (5s) aborts runaway queries with a clean error, and execution is
+  offloaded via `asyncio.to_thread`, so a heavy query can no longer freeze the
+  single-threaded server (authenticated DoS).
+- **MCP tools validate window/numeric inputs.** Date-window tools
+  (`get_metric`, `get_metric_trend`, `query_workouts`, `find_anomalies`,
+  `recovery_pattern`, `correlate`, `list_observations`) reject out-of-range /
+  non-int `days`/`lookback_days`/`lag_days` via `_validate_days` instead of
+  raising `OverflowError`; the plan validator rejects wrong-typed workout fields
+  with clean indexed errors instead of `TypeError`/`AttributeError`.
+- **`_is_public_path` is case-normalized** so an uppercase `/API/…` can't be
+  treated as a public (SPA) path while bypassing the lowercase `/api/` gate.
+- `run_sql` no longer echoes raw SQLite exception strings.
+
+### Fixed
+- **Stale-brief banner could never clear in the evening.** The server runs in
+  UTC, so its daily pull writes a `daily_metrics` row for "tomorrow" once UTC
+  rolls over — making `data_through_date` one day ahead of a just-written
+  brief's local date, so `isBriefStale` stayed true forever. The banner now
+  clamps the data frontier to the *viewer's* local day: a row for a day that
+  hasn't finished in your timezone isn't "newer data." Genuinely stale briefs
+  still flag.
+- Container build: build the SPA on Debian (glibc) instead of Alpine (musl) and
+  pin pnpm so Vite 8's rolldown native binding installs; harden uv/pnpm fetch
+  against a flaky build network.
+
+### Added
+- **"Ask your coach" is now an actionable button.** The brief banner, the
+  empty-brief state, and the empty training-plan state each copy a ready-to-paste
+  MCP prompt to the clipboard (a web page can't launch a Claude client, so it
+  hands you the prompt to paste into Desktop / Code / Mobile).
+
+## [0.4.0] - 2026-06-17
+
+### Added
+- **Training plans.** A `/plan` tab where you pick a goal (5K / 10K / Half /
+  Full / Custom), a race date, and a target time; the agent drafts a periodized
+  plan from your Garmin history, you riff with it in chat, and commit it. The
+  committed plan is tracked (goal header with a Riegel predicted finish,
+  schedule with per-day adherence, **Target/Actual** distance + pace columns,
+  planned-vs-actual weekly mileage, CTL trajectory) and folded into the daily
+  brief's workout takeaway (recovery takes precedence over the schedule on
+  red-flag days). The Today tab shows a **Today's Goal** card read
+  deterministically from `/api/plan`.
+- Two tables (`training_plans`, `plan_workouts`) with a partial unique index
+  enforcing a single active plan at the DB level.
+- Three DRAFT-ONLY agent tools (`propose_training_plan`, `revise_training_plan`,
+  `get_training_plan_status`) — the agent only writes drafts; activating or
+  deleting a plan is a human action via REST (`GET /api/plan`,
+  `POST /api/plan/{id}/commit`, `DELETE /api/plan/{id}`).
+- `plans.score_plan` — a deterministic plan-quality gate (safe ≤15%/week ramp +
+  taper into the race).
+- `scripts/ab_brief.py` — a cross-model A/B simulation harness for prompt
+  changes (dry-run by default, hard generation cap, cost-free `--mock` mode).
+- A `Content-Security-Policy` header (`script-src 'self'`) as defense-in-depth
+  against XSS from AI-authored plan strings.
+
+### Notes
+- Integrates the training-plans feature (previously the unmerged
+  `design/training-plans` branch) alongside the MCP work from 0.2.0–0.3.1.
+  Adherence is computed from the activities join (immune to plan-row edits) and
+  graded against the data frontier so Garmin lag never shows a false "missed".
+  The reverted brief-pre-fetch experiment from that branch is not included.
+
+## [0.3.1] - 2026-06-17
+
+### Fixed
+- **`notes.append_note` return contract** — it hardcoded `line=-1`, so
+  `save_user_note` reported the wrong index and a follow-up update/delete using
+  it silently no-op'd. Now returns the index `read_notes()` assigns.
+- **Manual-workout partial-failure / duplicate-on-retry** — the row committed,
+  then `baselines.recompute()` ran unguarded; a recompute failure raised as if
+  the write failed, and a retry inserted a second negative-id workout,
+  double-counting training load. Recompute failure now returns partial-success
+  (`logged`/`deleted: true, recompute_failed: true`). `log_manual_workout` also
+  rejects non-positive duration and future dates; `log_observation` validates
+  `observed_on` the same way.
+- MCP `serverInfo` version + `__version__` now track the package version.
+
+### Changed
+- **Coach output renders cleanly in a narrow chat.** The shared `system_prompt`
+  now carries an output-formatting contract steering every conversational reply
+  (free chat *and* `/fitness:coach`) away from wide markdown tables (which wrap
+  into mush in a monospace MCP pane) toward compact per-item lines and
+  phase-grouped sections — e.g. a training plan renders as
+  `Wk 5 · Jul 13 · Build · long 8mi · threshold 4×6min` lines, not a 6-column
+  grid. Scoped to conversational prose only; the structured JSON brief and its
+  schema are unchanged (prompt scorer still 11/11).
+
 ## [0.3.0] - 2026-06-16
 
 ### Added

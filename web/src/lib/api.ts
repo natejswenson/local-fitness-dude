@@ -1,7 +1,7 @@
 import type {
-  ActivityHeatmapResponse, BriefResponse, BriefStreamEvent, ChatEvent,
-  MetricSeries, PaceEfficiencyResponse, StrengthVolumeResponse, SyncState,
-  SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
+  ActivityHeatmapResponse, BriefResponse,
+  MetricSeries, PaceEfficiencyResponse, PlanDetail, PlanResponse, StrengthVolumeResponse,
+  SyncState, SyncTriggerResponse, TodayResponse, TrainingLoadSeries, Workout,
 } from './types'
 
 // --- Auth token ---------------------------------------------------------
@@ -109,46 +109,6 @@ export const api = {
       `/api/pace-efficiency?days=${days}&min_distance_km=${minDistanceKm}`,
     ),
   brief: () => getJson<BriefResponse>('/api/brief'),
-  briefGenerate: async (model: string) => {
-    const r = await authedFetch('/api/brief/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
-    })
-    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
-    return r.json() as Promise<BriefResponse>
-  },
-  briefGenerateStream: async function* (
-    model: string,
-    signal?: AbortSignal,
-  ): AsyncGenerator<BriefStreamEvent> {
-    const r = await authedFetch('/api/brief/generate/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
-      signal,
-    })
-    if (!r.ok || !r.body) throw new Error(`${r.status}: ${await r.text()}`)
-    const reader = r.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim()
-        buf = buf.slice(idx + 1)
-        if (!line) continue
-        try {
-          yield JSON.parse(line) as BriefStreamEvent
-        } catch (e) {
-          console.warn('bad brief stream line', line, e)
-        }
-      }
-    }
-  },
   syncStart: async (opts: { force?: boolean } = {}) => {
     const url = opts.force ? '/api/sync?force=true' : '/api/sync'
     const r = await authedFetch(url, { method: 'POST' })
@@ -156,39 +116,17 @@ export const api = {
     return r.json() as Promise<SyncTriggerResponse>
   },
   syncStatus: () => getJson<SyncState>('/api/sync/status'),
-  chatEnd: (sessionId: string) =>
-    authedFetch(`/api/chat/${sessionId}/end`, { method: 'POST' }),
-  chat: async function* (
-    sessionId: string,
-    message: string,
-    model: string,
-    signal?: AbortSignal,
-  ): AsyncGenerator<ChatEvent> {
-    const r = await authedFetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, message, model }),
-      signal,
-    })
-    if (!r.ok || !r.body) throw new Error(`${r.status}: ${await r.text()}`)
-    const reader = r.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim()
-        buf = buf.slice(idx + 1)
-        if (!line) continue
-        try {
-          yield JSON.parse(line) as ChatEvent
-        } catch (e) {
-          console.warn('bad ndjson line', line, e)
-        }
-      }
-    }
+  // --- Training plans ---
+  plan: () => getJson<PlanResponse>('/api/plan'),
+  planDraft: () => getJson<{ draft: PlanDetail | null }>('/api/plan/draft'),
+  commitPlan: async (planId: number) => {
+    const r = await authedFetch(`/api/plan/${planId}/commit`, { method: 'POST' })
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+    return r.json() as Promise<{ plan_id: number; status: string }>
+  },
+  deletePlan: async (planId: number) => {
+    const r = await authedFetch(`/api/plan/${planId}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+    return r.json() as Promise<{ plan_id: number; status: string }>
   },
 }

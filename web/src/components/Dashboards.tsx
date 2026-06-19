@@ -7,33 +7,15 @@ import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { ActivityHeatmap } from './ActivityHeatmap'
 import { Card, CardBody, CardHeader, CardTitle } from './Card'
-import { DashboardInsight, type Prompt } from './DashboardInsight'
 import { fmtDate, fmtDateShort } from '@/lib/utils'
 import type { PaceEfficiencyRun, StrengthVolumeWeek } from '@/lib/types'
 
-type Model = 'sonnet' | 'opus'
-
 /**
- * Custom dashboards page. Each view has an inline `<DashboardInsight />`
- * that streams the agent's answer directly under the chart that
- * prompted the question — no page-level chat panel, no scroll dance.
- * Session is shared across the three panels so context carries when
- * the user moves between them.
+ * Custom dashboards page. Charts + range toggles only — conversational
+ * analysis of these views now lives in the agent (Claude Desktop/Code/
+ * Mobile pointed at the fitness MCP).
  */
 export function Dashboards() {
-  // One session for all three insights so the agent has continuity
-  // when the user pivots between views. Generated once per page mount.
-  const [sessionId] = useState(() => crypto.randomUUID())
-  const [model, setModel] = useState<Model>('sonnet')
-
-  // Tear down the chat session when the user leaves the page so the
-  // server can release its agent client.
-  useEffect(() => {
-    return () => {
-      api.chatEnd(sessionId).catch(() => {})
-    }
-  }, [sessionId])
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
@@ -42,41 +24,14 @@ export function Dashboards() {
             <div className="text-sm text-muted">Custom views</div>
             <h1 className="text-2xl font-semibold tracking-tight mt-0.5">Dashboards</h1>
           </div>
-          <ModelToggle value={model} onChange={setModel} />
         </header>
 
-        <ActivityHeatmapPanel sessionId={sessionId} model={model} />
-        <PaceEfficiencyPanel sessionId={sessionId} model={model} />
-        <StrengthTrackerPanel sessionId={sessionId} model={model} />
+        <ActivityHeatmapPanel />
+        <PaceEfficiencyPanel />
+        <StrengthTrackerPanel />
       </div>
     </div>
   )
-}
-
-function ModelToggle({ value, onChange }: { value: Model; onChange: (v: Model) => void }) {
-  return (
-    <div className="flex bg-surface border border-border rounded-full p-0.5 text-[11px]">
-      {(['sonnet', 'opus'] as const).map((m) => (
-        <button
-          key={m}
-          onClick={() => onChange(m)}
-          className={
-            'px-2.5 py-1 rounded-full transition-colors ' +
-            (value === m ? 'bg-accent text-bg' : 'text-muted hover:text-text')
-          }
-          title={m === 'sonnet' ? 'Sonnet 4.6 — fast' : 'Opus 4.7 — deeper reasoning'}
-        >
-          {m === 'sonnet' ? 'Sonnet' : 'Opus'}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function rangeLabel(days: number): string {
-  if (days >= 365) return `${Math.round(days / 365)} year${days >= 730 ? 's' : ''}`
-  if (days >= 30) return `${Math.round(days / 30)} months`
-  return `${days} days`
 }
 
 // =====================================================================
@@ -90,23 +45,8 @@ const HEATMAP_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: Model }) {
+function ActivityHeatmapPanel() {
   const [days, setDays] = useState<number>(365)
-  const range = rangeLabel(days)
-  const heatmapPrompts: Prompt[] = [
-    {
-      label: 'Spot overload weeks',
-      seed: `Look at my activity heatmap for the last ${range}. Identify weeks where I overloaded — too many high-load days in a row without recovery — and compare them to weeks where I balanced load and rest well. What pattern should I aim for?`,
-    },
-    {
-      label: 'Consistency vs spikes',
-      seed: `Across the last ${range}, am I building up gradually or spiking? Highlight any sharp jumps in weekly load and whether they coincide with poor recovery markers (RHR, sleep, body battery).`,
-    },
-    {
-      label: 'Days I should have rested',
-      seed: `In the last ${range}, find days I trained hard when my recovery markers (RHR vs baseline, sleep score, body battery) suggested I should have rested. Be specific with dates.`,
-    },
-  ]
 
   return (
     <Card>
@@ -123,12 +63,6 @@ function ActivityHeatmapPanel({ sessionId, model }: { sessionId: string; model: 
       <CardBody>
         <div className="space-y-3">
           <ActivityHeatmap days={days} />
-          <DashboardInsight
-            prompts={heatmapPrompts}
-            sessionId={sessionId}
-            model={model}
-            topic="activity heatmap"
-          />
         </div>
       </CardBody>
     </Card>
@@ -146,7 +80,7 @@ const PACE_RANGES = [
   { label: '2y', days: 730 },
 ] as const
 
-function PaceEfficiencyPanel({ sessionId, model }: { sessionId: string; model: Model }) {
+function PaceEfficiencyPanel() {
   const [days, setDays] = useState<number>(180)
   const [runs, setRuns] = useState<PaceEfficiencyRun[] | null>(null)
 
@@ -154,26 +88,6 @@ function PaceEfficiencyPanel({ sessionId, model }: { sessionId: string; model: M
     setRuns(null)
     api.paceEfficiency(days, 2).then((r) => setRuns(r.values))
   }, [days])
-
-  const range = rangeLabel(days)
-  const pacePrompts: Prompt[] = [
-    {
-      label: 'Read the trend',
-      seed: `Walk me through my pace efficiency (HR per km/h) trend over the last ${range}. Is it improving or worsening? Cite the specific runs and the rolling-average shape.`,
-    },
-    {
-      label: 'Fatigue signals',
-      seed: `In the last ${range}, identify runs where my HR was disproportionately high relative to pace — the divergence-from-baseline runs. Cross-check with TSB on those dates: when negative, was the high HR/pace expected, or genuine fatigue?`,
-    },
-    {
-      label: 'Detraining vs fitness',
-      seed: `Looking at HR/pace efficiency over the last ${range} alongside CTL: am I gaining fitness, holding, or losing it? Distinguish between brief fatigue dips and a real downward trend.`,
-    },
-    {
-      label: 'Best efficiency runs',
-      seed: `What were my 5 most efficient runs (lowest HR per km/h) in the last ${range}? What did the recovery context look like in the days before each?`,
-    },
-  ]
 
   // Rolling 5-run average of hr_per_kmh — smooths noise so the trend is
   // visible without losing per-run dots. TSB stays on its own axis.
@@ -298,12 +212,6 @@ function PaceEfficiencyPanel({ sessionId, model }: { sessionId: string; model: M
           <Legend color="oklch(0.78 0.16 28)" label="HR per km/h (lower is better)" />
           <Legend color="oklch(0.78 0.16 158)" label="TSB — negative = accumulated fatigue" />
         </div>
-        <DashboardInsight
-          prompts={pacePrompts}
-          sessionId={sessionId}
-          model={model}
-          topic="pace efficiency"
-        />
       </CardBody>
     </Card>
   )
@@ -343,7 +251,7 @@ const STRENGTH_RANGES = [
   { label: '5y', weeks: 260 },
 ] as const
 
-function StrengthTrackerPanel({ sessionId, model }: { sessionId: string; model: Model }) {
+function StrengthTrackerPanel() {
   const [weeks, setWeeks] = useState<number>(104)
   const [resp, setResp] = useState<{
     values: StrengthVolumeWeek[]
@@ -359,22 +267,6 @@ function StrengthTrackerPanel({ sessionId, model }: { sessionId: string; model: 
       total_sessions: r.total_sessions,
     }))
   }, [weeks])
-
-  const range = `${weeks} weeks`
-  const strengthPrompts: Prompt[] = [
-    {
-      label: 'Why so little strength?',
-      seed: `My strength training has fallen off — last logged ${resp?.last_session_date ?? 'a long time ago'}. Walk me through whether this is hurting my running performance and recovery, and what the minimum viable strength routine would be for someone with my running load.`,
-    },
-    {
-      label: 'Complement my running',
-      seed: `Given my recent running volume and the lack of strength sessions in the last ${range}, what 2-3 specific strength movements (lifts, plyometrics, mobility) would most directly improve my running and reduce injury risk? Be concrete — sets, reps, weight if applicable, and frequency.`,
-    },
-    {
-      label: 'Restart plan',
-      seed: `Build me a 4-week ramp to restart strength training without compromising my current running schedule. Account for my CTL/ATL trajectory and recommend specific session days based on my typical running pattern.`,
-    },
-  ]
 
   return (
     <Card>
@@ -441,12 +333,6 @@ function StrengthTrackerPanel({ sessionId, model }: { sessionId: string; model: 
             </div>
           </>
         )}
-        <DashboardInsight
-          prompts={strengthPrompts}
-          sessionId={sessionId}
-          model={model}
-          topic="strength"
-        />
       </CardBody>
     </Card>
   )

@@ -1,11 +1,24 @@
 # syntax=docker/dockerfile:1.7
 
 # ----- Stage 1: build the React SPA -------------------------------------
-FROM node:22-alpine AS web-builder
+# Debian (glibc), not Alpine (musl): Vite 8 bundles with rolldown, whose
+# native binding ships per-platform. The musl binding fails to resolve under
+# pnpm on alpine (MODULE_NOT_FOUND at `vite build`); the gnu binding on slim
+# is the supported, well-tested path.
+FROM node:22-bookworm-slim AS web-builder
 WORKDIR /web
 
 # Use pnpm via corepack (matches the host workflow).
 RUN corepack enable
+
+# Harden the registry fetch: rolldown's platform-specific native binding is
+# an OPTIONAL dependency, so a flaky download makes `pnpm install` succeed
+# with the .node binary missing — `vite build` then dies with MODULE_NOT_FOUND.
+# More retries / longer timeouts make the optional-binding fetch reliable.
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=10000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=300000
 
 # Cache deps layer when only source changes
 COPY web/package.json web/pnpm-lock.yaml* ./
@@ -50,6 +63,11 @@ WORKDIR /app
 # `readme` field so it has to be present at sync time.
 COPY --chown=app:app pyproject.toml uv.lock README.md ./
 COPY --chown=app:app src/ ./src/
+# Harden the dependency download against a slow/flaky build network: a
+# longer per-request timeout plus reduced concurrency so the large wheels
+# (claude-agent-sdk is ~73 MB) don't saturate the link and reset the batch.
+ENV UV_HTTP_TIMEOUT=180 \
+    UV_CONCURRENT_DOWNLOADS=4
 RUN chown app:app /app && su app -c "uv sync --frozen --no-dev"
 
 # Copy the built SPA from stage 1 so FastAPI's static-file mount finds it.

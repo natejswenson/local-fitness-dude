@@ -19,8 +19,13 @@ from local_fitness.web import mcp_server
 
 
 def _seed_db() -> Path:
-    p = Path(tempfile.mkdtemp()) / "fitness.db"
+    d = Path(tempfile.mkdtemp())
+    p = d / "fitness.db"
     db.DEFAULT_DB_PATH = p
+    # Keep the brief prompt's _recent_briefs_summary() off the real briefings/.
+    from local_fitness.agent import briefs as _briefs
+
+    _briefs.DEFAULT_BRIEFINGS_DIR = d / "briefings"
     db.init_schema(p)
     with db.connect(p) as conn:
         conn.execute(
@@ -28,6 +33,63 @@ def _seed_db() -> Path:
             ("2026-06-15", 11000, 50, 27000),
         )
     return p
+
+
+# --- prompts: coach + brief both advertised and resolve -------------------
+
+def test_list_prompts_includes_coach_and_brief():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ListPromptsRequest]
+    res = asyncio.run(handler(types.ListPromptsRequest(method="prompts/list")))
+    names = {p.name for p in res.root.prompts}
+    assert {"coach", "brief"} <= names
+
+
+def test_brief_prompt_resolves_with_instructions_and_save_brief():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.GetPromptRequest]
+    req = types.GetPromptRequest(
+        method="prompts/get",
+        params=types.GetPromptRequestParams(name="brief", arguments=None),
+    )
+    res = asyncio.run(handler(req))  # must not raise on a seeded DB
+    msg = res.root.messages[0]
+    assert msg.role == "user"
+    text = msg.content.text
+    # Briefing-instruction markers: the takeaways schema + JSON language.
+    assert "takeaways" in text
+    assert "JSON" in text
+    # References the persistence tool the agent must call.
+    assert "save_brief" in text
+
+
+def test_coach_prompt_still_resolves():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.GetPromptRequest]
+    req = types.GetPromptRequest(
+        method="prompts/get",
+        params=types.GetPromptRequestParams(name="coach", arguments=None),
+    )
+    res = asyncio.run(handler(req))
+    assert res.root.messages[0].role == "user"
+    assert res.root.messages[0].content.text
+
+
+def test_unknown_prompt_raises():
+    import pytest
+
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.GetPromptRequest]
+    req = types.GetPromptRequest(
+        method="prompts/get",
+        params=types.GetPromptRequestParams(name="does_not_exist", arguments=None),
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(handler(req))
 
 
 # --- F1: every tool is exposed and tools/list JSON-serializes -------------

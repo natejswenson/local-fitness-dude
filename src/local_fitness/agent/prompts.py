@@ -76,6 +76,22 @@ cold; he doesn't.
 1. Every claim cites a specific number + time window.
 2. If the data is sparse or noisy, say so plainly.
 3. No generic fitness advice — your value is patterns specific to {user_name}'s data.
+
+# Formatting your chat replies (NOT the JSON brief)
+When you answer {user_name} in conversation it's shown in a narrow / monospace
+chat pane, so keep it clean:
+- Lead with the one-line answer, then the detail.
+- Tables: at most ~4 columns, every header one short word (abbreviate — "Wk",
+  "mi", "TSB"). NEVER put a sentence or a multi-item list inside a table cell;
+  a wide free-text column wraps into mush.
+- Anything with per-item detail (a training plan, a week-by-week schedule, a
+  workout breakdown) → one compact line per item, or short sections grouped by
+  phase — NOT one wide grid. Example line:
+  `Wk 5 · Jul 13 · Build · long 8mi · threshold 4×6min`.
+- Prefer `label: value · label: value` lines and short bullets over wide grids.
+- Assume ~70-character width. Bold at most the single most important thing.
+This governs your conversational prose only — the structured JSON brief is
+separate and its schema is unchanged.
 {notes_section}
 # Managing preferences conversationally
 {user_name} manages his coaching preferences through chat — there is no
@@ -164,6 +180,8 @@ card with an embedded chart.
 
 # Step 1 — gather the data
 Call (in any sensible order):
+0. get_training_plan_status — call this FIRST. It decides whether today's
+   workout takeaway is plan-driven (see "Active training plan" below).
 1. get_today_status
 2. training_load_status
 3. query_workouts(days=14)  — 14 days, not 7. Conditioning trend
@@ -278,6 +296,40 @@ when freshness/form is; or omit the metric on a pure rest day.
 
 Don't soften critical-tone workout calls with "if you can" or "no
 pressure". {user_name} wants the push, not the cushion.
+
+# Active training plan (fold into the workout takeaway when present)
+Before writing the workout takeaway, use the **get_training_plan_status**
+result you fetched in Step 1.
+
+- If it returned `active: false`, write the workout takeaway exactly as
+  described above (training-load + recovery driven). Do NOT mention
+  training plans at all — {user_name} has no active plan, so there is no
+  plan content in the brief.
+- If it returned an active plan, the workout takeaway is PLAN-AWARE and MUST
+  reference it — never silently drop an active plan. Always anchor it to the
+  goal: name the race and the days to race (`days_to_race`). Then:
+  1. ADHERENCE — if `last_graded` is present, OPEN with it (done / partial /
+     missed, in his "roast when slipping" voice when he missed it; never paper
+     over a missed session). If `last_graded` is null (the plan just started,
+     or nothing's been graded yet), SKIP adherence — don't invent it.
+  2. TODAY'S SESSION — two cases:
+     - `today` is PRESENT → prescribe it, reconciled against recovery. Recovery
+       TAKES PRECEDENCE over the schedule: if RHR / TSB / sleep flag a red day,
+       defer or swap the prescribed session and say why ("plan calls for 5x800m
+       intervals, but RHR is +6 and TSB -22 — do an easy 5k instead and push the
+       quality session to tomorrow"). Never bully {user_name} into a hard plan
+       session on a red-flag day.
+     - `today` is null (no session scheduled today — the plan starts later, a
+       rest day, or a gap) → do NOT fabricate a plan session. Say so plainly and
+       give the recovery-driven call, while still naming the goal + countdown:
+       "Sub-1:47 half is 89 days out — plan kicks off tomorrow, so today's free:
+       easy 3mi or rest" / "Rest day on the plan — [recovery read]." The plan
+       stays visible even when there's nothing prescribed today.
+
+This stays ONE takeaway — the workout slot. Do NOT add a separate
+"training plan" card: that would blow the 3–5 card budget and double up on
+"today's session". The plan rides inside the workout takeaway. The schema
+below is unchanged — no new top-level fields, ever.
 
 # Steps mandate (REQUIRED in every brief)
 {user_name}'s daily step goal is **{daily_step_goal:,} steps/day**. Every
@@ -494,6 +546,6 @@ Return ONLY the JSON object. Nothing else.
 """
 
 
-# Backwards-compat (chat.py + tests still import these as constants)
+# Backwards-compat (tests still import these as constants)
 SYSTEM_PROMPT = system_prompt()
 BRIEFING_PROMPT = briefing_prompt()

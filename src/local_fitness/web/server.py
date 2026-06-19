@@ -13,17 +13,14 @@ Endpoints:
   GET  /api/workouts?type&days&limit — filtered workout list
   GET  /api/workout/{id}            — single workout + splits + zones
   GET  /api/brief                   — today's briefing markdown (cached if exists)
-  POST /api/brief/generate          — force-regenerate today's briefing
   POST /api/sync                    — kick off a background pull (throttled)
   GET  /api/sync/status             — running flag + last completed run info
-  POST /api/chat                    — streaming agent chat (NDJSON)
   GET  /                            — serve the SPA index.html
   GET  /assets/*                    — serve built frontend assets
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import secrets
@@ -33,26 +30,15 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator
-
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    TextBlock,
-    ThinkingBlock,
-    ToolUseBlock,
-)
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import db, notes as user_notes_mod
-from ..agent import briefing as briefing_mod
+from .. import db, notes as user_notes_mod, plans as plans_mod
+from ..agent import briefs
 from ..agent import prompts
-from ..agent import tools as agent_tools
 from ..ingest import baselines as baselines_mod
 from ..ingest import daily as daily_ingest
 
@@ -64,11 +50,13 @@ LOG = logging.getLogger(__name__)
 # refuses to start without one — see the startup check.
 API_TOKEN = os.environ.get("LOCAL_FITNESS_API_TOKEN") or None
 
-# Per-IP rate limits for the expensive endpoints — chat and brief
-# generation both hit Claude. Anyone on the LAN with API token access
-# could otherwise loop these and drain the subscription. Bucket is an
-# in-memory deque of recent request timestamps; refilled by elapsed time.
-RATE_LIMITED_PREFIXES = ("/api/chat", "/api/brief/generate")
+# Per-IP rate limits for Claude-cost endpoints. The web-server process now
+# holds no Claude inference (synthesis moved to the MCP client / scheduled
+# job), so the prefix tuple is empty — the rate-limit middleware no-ops.
+# Kept in place so re-adding a Claude-cost path is a one-line change: just
+# add its prefix here. Bucket is an in-memory deque of recent request
+# timestamps; refilled by elapsed time.
+RATE_LIMITED_PREFIXES: tuple[str, ...] = ()
 RATE_LIMIT_WINDOW_SEC = 60.0
 RATE_LIMIT_MAX_REQUESTS = 20  # 20 requests per IP per minute on Claude-cost endpoints
 _rate_buckets: dict[str, deque[float]] = defaultdict(deque)
@@ -96,10 +84,6 @@ SYNC_THROTTLE_SECONDS = 15 * 60
 SYNC_RETRY_BACKOFFS = [60, 5 * 60, 15 * 60]
 
 
-# Per-session ClaudeSDKClient so multi-turn chat keeps context.
-_chat_sessions: dict[str, ClaudeSDKClient] = {}
-_session_lock = asyncio.Lock()
-
 # Auto-sync background-task state. We keep only the running flag in memory;
 # completion history is read from the persistent ingest_runs table so the
 # state survives server restarts.
@@ -109,18 +93,6 @@ _sync_lock = asyncio.Lock()
 _sync_task: asyncio.Task | None = None
 _retry_task: asyncio.Task | None = None
 _retry_count = 0
-
-
-def _options(model: str) -> ClaudeAgentOptions:
-    user_name = db.get_setting("user_name", prompts.DEFAULT_USER_NAME)
-    return ClaudeAgentOptions(
-        mcp_servers={agent_tools.SERVER_NAME: agent_tools.make_server()},
-        allowed_tools=agent_tools.allowed_tool_names(),
-        system_prompt=prompts.system_prompt(user_name),
-        model=model,
-        permission_mode="bypassPermissions",
-        max_turns=50,
-    )
 
 
 # Standalone MCP server: the same fitness tools, reachable from interactive
@@ -160,15 +132,6 @@ async def lifespan(app: FastAPI):
         except (asyncio.TimeoutError, asyncio.CancelledError):
             pass
 
-    # Tear down any live chat sessions on shutdown
-    async with _session_lock:
-        for sid, client in list(_chat_sessions.items()):
-            try:
-                await client.__aexit__(None, None, None)
-            except Exception:
-                LOG.warning("Failed to close chat session %s on shutdown", sid)
-            _chat_sessions.pop(sid, None)
-
 
 app = FastAPI(title="local-fitness", lifespan=lifespan)
 
@@ -200,12 +163,17 @@ def _is_public_path(path: str) -> bool:
     bad-token request to 401 so the login screen can re-prompt."""
     if path == "/health":
         return True
+    # Compare case-insensitively: the router matches API/MCP routes case-
+    # sensitively, so an uppercase `/API/TODAY` matches no real route and would
+    # otherwise fall to the SPA catch-all and be treated as public. Normalizing
+    # here keeps the auth gate and the router in agreement.
+    lowered = path.lower()
     # The MCP endpoint is auth-gated like /api/* (NOT public). Gate it
     # explicitly — it lives outside the /api/ prefix, and the default below
     # treats non-/api/ paths as public, which would expose it.
-    if path == "/mcp" or path.startswith("/mcp/"):
+    if lowered == "/mcp" or lowered.startswith("/mcp/"):
         return False
-    if not path.startswith("/api/"):
+    if not lowered.startswith("/api/"):
         return True  # SPA shell, /assets/*, etc. — handled by static routes
     return False
 
@@ -269,6 +237,21 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # Don't advertise the server stack (uvicorn's header is suppressed in serve()).
+    response.headers["Server"] = "fitness"
+    # HSTS — the proxy terminates TLS; browsers ignore this over plain HTTP. No
+    # includeSubDomains/preload (intranet host, self-signed cert).
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    # CSP: scripts only from same origin (no inline JS) — blocks AI-authored
+    # plan strings from becoming a stored-XSS / token-theft sink. style-src
+    # allows inline styles because recharts/React set element style attributes.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://rsms.me; "
+        "img-src 'self' data:; font-src 'self' data: https://rsms.me; "
+        "connect-src 'self'",
+    )
     return response
 
 
@@ -395,6 +378,74 @@ async def api_training_load(days: int = Query(180, ge=7, le=2000)) -> dict:
             (cutoff,),
         ).fetchall()]
     return {"days": days, "values": rows}
+
+
+# ---------------------------------------------------------------- API: plans --
+# Training plans. GET assembles the whole tab (graded workouts + rollups +
+# predicted finish + CTL series). commit/delete are the human-driven
+# activation/soft-delete actions — the agent has no tool for either. None of
+# these call Claude, so none are rate-limited.
+
+_RIEGEL_LOOKBACK_DAYS = 120
+
+
+def _assemble_plan_detail(plan: dict | None) -> dict | None:
+    if plan is None:
+        return None
+    frontier = db.last_known_daily_date()
+    today = date.today().isoformat()
+    dates = [w["date"] for w in plan["workouts"]] or [today]
+    start, end = min(dates), max([today, *dates])
+    activities_by_date = plans_mod.load_activities_by_date(start, end)
+    cutoff = (date.today() - timedelta(days=_RIEGEL_LOOKBACK_DAYS)).isoformat()
+    best = plans_mod.best_recent_effort(cutoff)
+    detail = plans_mod.build_plan_detail(plan, frontier, activities_by_date, best)
+    with db.connect() as conn:
+        detail["ctl_series"] = [
+            dict(r) for r in conn.execute(
+                "SELECT date, ctl FROM baselines WHERE ctl IS NOT NULL ORDER BY date"
+            ).fetchall()
+        ]
+    return detail
+
+
+@app.get("/api/plan")
+async def api_plan() -> dict:
+    return {
+        "active": _assemble_plan_detail(plans_mod.get_active_plan()),
+        "draft": _assemble_plan_detail(plans_mod.get_draft_plan()),
+    }
+
+
+@app.get("/api/plan/draft")
+async def api_plan_draft() -> dict:
+    """Return the pending DRAFT plan (assembled), or null when none.
+
+    A thin convenience endpoint mirroring the ``draft`` field of
+    ``/api/plan`` so the TrainingPlan viewer can poll the draft cheaply
+    and keep the draft-review flow explicit.
+    """
+    return {"draft": _assemble_plan_detail(plans_mod.get_draft_plan())}
+
+
+@app.post("/api/plan/{plan_id}/commit")
+async def api_plan_commit(plan_id: int) -> dict:
+    try:
+        plans_mod.commit_plan(plan_id, now=datetime.now().isoformat(timespec="seconds"))
+    except plans_mod.PlanNotFoundError:
+        raise HTTPException(404, "plan not found")
+    except plans_mod.NotDraftError:
+        raise HTTPException(409, "plan is not a draft")
+    return {"plan_id": plan_id, "status": "active"}
+
+
+@app.delete("/api/plan/{plan_id}")
+async def api_plan_delete(plan_id: int) -> dict:
+    try:
+        plans_mod.delete_plan(plan_id)
+    except plans_mod.PlanNotFoundError:
+        raise HTTPException(404, "plan not found")
+    return {"plan_id": plan_id, "status": "archived"}
 
 
 @app.get("/api/workouts")
@@ -765,7 +816,7 @@ async def api_brief() -> dict:
     data has landed since the brief was generated and offer a
     regenerate prompt.
     """
-    brief = briefing_mod.load_today()
+    brief = briefs.load_today() or briefs.load_latest()
     data_through = db.last_known_daily_date()
     if brief:
         return {
@@ -780,86 +831,6 @@ async def api_brief() -> dict:
         "cached": False,
         "data_through_date": data_through,
     }
-
-
-class BriefGenerateRequest(BaseModel):
-    model: str = "claude-sonnet-4-6"
-
-
-@app.post("/api/brief/generate")
-async def api_brief_generate(req: BriefGenerateRequest) -> dict:
-    """Force-regenerate today's brief and return the structured object."""
-    t_endpoint_start = time.perf_counter()
-    try:
-        await asyncio.to_thread(briefing_mod.generate_and_save, model=req.model)
-        brief = briefing_mod.load_today()
-        return {
-            "date": date.today().isoformat(),
-            "brief": brief.model_dump() if brief else None,
-            "cached": False,
-            "data_through_date": db.last_known_daily_date(),
-        }
-    finally:
-        total_ms = (time.perf_counter() - t_endpoint_start) * 1000
-        LOG.info(
-            "endpoint_timing path=/api/brief/generate total_ms=%.1f model=%s",
-            total_ms,
-            req.model,
-        )
-
-
-@app.post("/api/brief/generate/stream")
-async def api_brief_generate_stream(req: BriefGenerateRequest) -> StreamingResponse:
-    """Stream takeaways as they're parsed from the model's accumulating output.
-
-    Wire format: NDJSON (one ``{...}\\n`` event per line). Matches the chat
-    endpoint's pattern so the frontend reuses the same fetch+reader idiom
-    (avoids EventSource / iOS-Safari SSE quirks). The final ``done`` event
-    carries the full Brief and the data_through_date so the UI can update
-    its cached state without a follow-up GET.
-    """
-    t_endpoint_start = time.perf_counter()
-    model = req.model
-
-    async def event_stream() -> AsyncIterator[bytes]:
-        cancelled = False
-        try:
-            async for evt in briefing_mod.generate_streaming(model=model):
-                if evt.get("type") == "done":
-                    # Annotate the final event with the data-through date so
-                    # the client can refresh its staleness banner.
-                    evt = {**evt, "data_through_date": db.last_known_daily_date()}
-                yield (json.dumps(evt) + "\n").encode("utf-8")
-        except asyncio.CancelledError:
-            # Client disconnected mid-stream. CancelledError is a BaseException
-            # so the previous `except Exception` missed it — leaving 200s+
-            # regens that completed without saving a brief and without any
-            # error log. Log explicitly, then re-raise so FastAPI cleans up.
-            cancelled = True
-            LOG.warning("Brief stream cancelled by client disconnect")
-            raise
-        except Exception as e:
-            LOG.exception("Brief stream failed")
-            yield (json.dumps({"type": "error", "message": str(e)}) + "\n").encode("utf-8")
-        finally:
-            total_ms = (time.perf_counter() - t_endpoint_start) * 1000
-            LOG.info(
-                "endpoint_timing path=/api/brief/generate/stream total_ms=%.1f model=%s cancelled=%s",
-                total_ms,
-                model,
-                cancelled,
-            )
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-        headers={
-            # Defeat any reverse-proxy buffering (Traefik passes through fine
-            # but explicit beats implicit; also a hint to nginx-style proxies).
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache",
-        },
-    )
 
 
 # ---------------------------------------------------------------- API: sync --
@@ -1029,66 +1000,6 @@ async def api_sync_status():
     return _sync_state_dict()
 
 
-# ---------------------------------------------------------------- API: chat --
-
-class ChatRequest(BaseModel):
-    session_id: str
-    message: str
-    model: str = "claude-sonnet-4-6"
-
-
-async def _get_or_create_session(session_id: str, model: str) -> ClaudeSDKClient:
-    async with _session_lock:
-        client = _chat_sessions.get(session_id)
-        if client is None:
-            client = ClaudeSDKClient(options=_options(model))
-            await client.__aenter__()
-            _chat_sessions[session_id] = client
-            LOG.info("Created chat session %s (model=%s)", session_id[:8], model)
-        return client
-
-
-def _ndjson(event: dict) -> bytes:
-    return (json.dumps(event) + "\n").encode("utf-8")
-
-
-@app.post("/api/chat")
-async def api_chat(req: ChatRequest) -> StreamingResponse:
-    client = await _get_or_create_session(req.session_id, req.model)
-
-    async def stream() -> AsyncIterator[bytes]:
-        try:
-            await client.query(req.message)
-            async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            yield _ndjson({"type": "text", "text": block.text})
-                        elif isinstance(block, ToolUseBlock):
-                            yield _ndjson({"type": "tool_use", "name": block.name, "input": block.input})
-                        elif isinstance(block, ThinkingBlock):
-                            yield _ndjson({"type": "thinking", "text": block.thinking})
-            yield _ndjson({"type": "done"})
-        except Exception as e:
-            LOG.exception("Chat stream error")
-            yield _ndjson({"type": "error", "message": str(e)})
-
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
-
-
-@app.post("/api/chat/{session_id}/end")
-async def api_chat_end(session_id: str) -> dict:
-    async with _session_lock:
-        client = _chat_sessions.pop(session_id, None)
-    if client:
-        try:
-            await client.__aexit__(None, None, None)
-        except Exception:
-            pass
-        return {"closed": True}
-    return {"closed": False}
-
-
 # ---------------------------------------------------------------- API: notes --
 # Durable user preferences saved by the chat agent (or manually via the API
 # below). Read by both prompts.system_prompt() and the future Settings UI.
@@ -1184,9 +1095,9 @@ def serve(host: str | None = None, port: int = 8765, reload: bool = False) -> No
     to the Docker network; host CLI keeps the loopback-only default.
 
     Refuses to start on a non-loopback host without ``LOCAL_FITNESS_API_TOKEN``
-    set. The /api/* endpoints expose all wellness data, the chat endpoint
-    can drain Claude subscription quota, and the user-notes endpoints can
-    rewrite agent memory — so unauthenticated LAN exposure is a no.
+    set. The /api/* endpoints expose all wellness data and the user-notes
+    endpoints can rewrite agent memory — so unauthenticated LAN exposure is
+    a no.
     """
     import uvicorn
     resolved_host = host or os.environ.get("LOCAL_FITNESS_HOST", "127.0.0.1")
@@ -1213,4 +1124,5 @@ def serve(host: str | None = None, port: int = 8765, reload: bool = False) -> No
         port=port,
         reload=reload,
         log_level="info",
+        server_header=False,  # don't advertise "Server: uvicorn"; middleware sets our own
     )

@@ -91,3 +91,57 @@ def test_default_db_path_honors_env(tmp_path, monkeypatch):
     assert db._default_db_path() == tmp_path / "fitness.db"
     monkeypatch.delenv("LOCAL_FITNESS_DATA_DIR")
     assert db._default_db_path().name == "fitness.db"
+
+
+def test_training_plan_tables_exist(dbp):
+    with db.connect(dbp) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert {"training_plans", "plan_workouts"} <= tables
+
+
+def test_one_active_plan_unique_index(dbp):
+    import sqlite3
+
+    # First active plan is fine.
+    with db.connect(dbp) as conn:
+        conn.execute(
+            "INSERT INTO training_plans (status, goal_type, race_date, created_at) "
+            "VALUES ('active', '10k', '2026-09-14', '2026-06-15T00:00:00')"
+        )
+    # A second active plan must violate the partial unique index.
+    with pytest.raises(sqlite3.IntegrityError):
+        with db.connect(dbp) as conn:
+            conn.execute(
+                "INSERT INTO training_plans (status, goal_type, race_date, created_at) "
+                "VALUES ('active', '5k', '2026-10-01', '2026-06-15T00:00:00')"
+            )
+    # Archived/draft rows are unconstrained — many allowed.
+    with db.connect(dbp) as conn:
+        conn.execute(
+            "INSERT INTO training_plans (status, goal_type, race_date, created_at) "
+            "VALUES ('draft', '5k', '2026-10-01', '2026-06-15T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO training_plans (status, goal_type, race_date, created_at) "
+            "VALUES ('archived', 'half', '2026-11-01', '2026-06-15T00:00:00')"
+        )
+
+
+def test_plan_workouts_columns(dbp):
+    with db.connect(dbp) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(plan_workouts)")}
+    assert {
+        "workout_id",
+        "plan_id",
+        "date",
+        "seq",
+        "week_index",
+        "type",
+        "target_distance_m",
+        "target_pace_sec_per_km",
+        "target_duration_sec",
+        "description",
+    } <= cols

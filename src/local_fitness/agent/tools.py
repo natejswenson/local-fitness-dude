@@ -7,14 +7,18 @@ column names — no user input ever interpolates into SQL except via params.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from pydantic import ValidationError
 
-from .. import db, notes
-from . import units
+from .. import db, notes, plans
+from . import briefs, units
 
 
 SERVER_NAME = "fitness"
@@ -95,13 +99,33 @@ DAILY_NUMERIC_METRICS = {
 
 
 def _text(payload: Any) -> dict:
+    # Compact JSON (no indent) — fewer whitespace tokens across the multi-turn
+    # agent loop; the model parses either format.
     if not isinstance(payload, str):
-        payload = json.dumps(payload, indent=2, default=str)
+        payload = json.dumps(payload, default=str)
     return {"content": [{"type": "text", "text": payload}]}
 
 
 def _err(msg: str, **extra) -> dict:
     return {"content": [{"type": "text", "text": json.dumps({"error": msg, **extra})}], "is_error": True}
+
+
+def _validate_days(value: Any, name: str = "days", *, lo: int = 1, hi: int = 3650) -> str | None:
+    """Bounds-check a user-supplied day count before it reaches timedelta().
+
+    Returns an error string (for the caller to wrap with ``_err``) or ``None``
+    when valid. ``timedelta(days=N)`` raises a raw OverflowError once N exceeds
+    ~10**9; the REST layer clamps these via ``Query(ge=, le=)`` but the tool
+    surface didn't. Rejects non-ints (and bool, since ``isinstance(True, int)``
+    is True) and anything outside ``[lo, hi]`` with a clean, bounded message.
+    Mirrors how these tools already reject bad metric names (a clear error, not
+    a silent clamp).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"{name} must be an integer between {lo} and {hi}"
+    if value < lo or value > hi:
+        return f"{name} must be between {lo} and {hi}"
+    return None
 
 
 def _augment_workout(w: dict) -> dict:
@@ -159,9 +183,12 @@ async def get_today_status(_args: dict) -> dict:
 )
 async def get_metric(args: dict) -> dict:
     metric = args["metric"]
-    days = int(args["days"])
     if metric not in DAILY_NUMERIC_METRICS:
         return _err(f"unknown metric '{metric}'", allowed=sorted(DAILY_NUMERIC_METRICS))
+    err = _validate_days(args["days"])
+    if err:
+        return _err(err)
+    days = args["days"]
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
         rows = conn.execute(
@@ -178,9 +205,13 @@ async def get_metric(args: dict) -> dict:
 )
 async def get_metric_trend(args: dict) -> dict:
     metric = args["metric"]
-    days = int(args["days"])
     if metric not in DAILY_NUMERIC_METRICS:
         return _err(f"unknown metric '{metric}'", allowed=sorted(DAILY_NUMERIC_METRICS))
+    # lo=2: a trend (slope, current-vs-mean) is meaningless on a single sample.
+    err = _validate_days(args["days"], lo=2)
+    if err:
+        return _err(err)
+    days = args["days"]
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
         rows = conn.execute(
@@ -245,8 +276,11 @@ async def query_workouts(args: dict) -> dict:
         where.append("activity_type LIKE ?")
         params.append(f"%{args['activity_type']}%")
     if args.get("days"):
+        err = _validate_days(args["days"])
+        if err:
+            return _err(err)
         where.append("date >= ?")
-        params.append((date.today() - timedelta(days=int(args["days"]))).isoformat())
+        params.append((date.today() - timedelta(days=args["days"])).isoformat())
     if args.get("min_distance_km"):
         where.append("distance_meters >= ?")
         params.append(float(args["min_distance_km"]) * 1000)
@@ -353,7 +387,10 @@ async def find_anomalies(args: dict) -> dict:
     metric = args["metric"]
     if metric not in BASELINE_METRICS:
         return _err("only baseline-tracked metrics supported", allowed=sorted(BASELINE_METRICS))
-    days = int(args.get("lookback_days") or 90)
+    days = args.get("lookback_days") or 90
+    err = _validate_days(days, name="lookback_days")
+    if err:
+        return _err(err)
     threshold = float(args.get("sd_threshold") or 2.0)
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
@@ -426,8 +463,16 @@ async def correlate(args: dict) -> dict:
     b = args["metric_b"]
     if a not in DAILY_NUMERIC_METRICS or b not in DAILY_NUMERIC_METRICS:
         return _err("metrics must be daily numeric", allowed=sorted(DAILY_NUMERIC_METRICS))
-    days = int(args["days"])
-    lag = int(args.get("lag_days") or 0)
+    err = _validate_days(args["days"])
+    if err:
+        return _err(err)
+    days = args["days"]
+    # lag may legitimately be 0 or negative (sign flips which metric leads);
+    # bound its magnitude so days + abs(lag) + 1 can't overflow timedelta().
+    lag = args.get("lag_days") or 0
+    lag_err = _validate_days(lag, name="lag_days", lo=-365, hi=365)
+    if lag_err:
+        return _err(lag_err)
     cutoff = (date.today() - timedelta(days=days + abs(lag) + 1)).isoformat()
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute(
@@ -491,7 +536,10 @@ async def recovery_pattern(args: dict) -> dict:
     if args.get("min_duration_min"):
         where.append("duration_seconds >= ?")
         params.append(int(args["min_duration_min"]) * 60)
-    lookback = int(args.get("lookback_days") or 365)
+    lookback = args.get("lookback_days") or 365
+    err = _validate_days(lookback, name="lookback_days")
+    if err:
+        return _err(err)
     where.append("date >= ?")
     params.append((date.today() - timedelta(days=lookback)).isoformat())
     where_sql = " AND ".join(where)
@@ -551,6 +599,36 @@ async def recovery_pattern(args: dict) -> dict:
     })
 
 
+# Wall-clock budget for a single run_sql query. A heavier query is aborted by
+# the SQLite progress handler so a recursive CTE / cartesian join can't hang the
+# (single-threaded) server. Granularity: how many VM ops between deadline checks.
+_RUN_SQL_TIME_BUDGET_S = 5.0
+_RUN_SQL_PROGRESS_OPS = 10_000
+
+
+def _run_sql_blocking(q: str) -> list[dict]:
+    """Execute `q` against a READ-ONLY connection with a wall-clock deadline.
+
+    The read-only connection is the real write gate (engine-enforced); the
+    keyword denylist in run_sql is only defense-in-depth. The progress handler
+    aborts once the deadline passes, which makes SQLite raise OperationalError.
+    Runs in a worker thread (via asyncio.to_thread) so even a within-budget
+    heavy query never blocks the event loop.
+    """
+    deadline = time.monotonic() + _RUN_SQL_TIME_BUDGET_S
+
+    def _abort_if_over_budget() -> int:
+        # Truthy return => SQLite interrupts the running statement.
+        return 1 if time.monotonic() > deadline else 0
+
+    with db.connect_readonly() as conn:
+        conn.set_progress_handler(_abort_if_over_budget, _RUN_SQL_PROGRESS_OPS)
+        try:
+            return [dict(r) for r in conn.execute(q).fetchmany(500)]
+        finally:
+            conn.set_progress_handler(None, 0)
+
+
 @tool(
     "run_sql",
     "Execute a read-only SELECT or WITH query against the fitness DB. "
@@ -563,16 +641,23 @@ async def run_sql(args: dict) -> dict:
     lowered = q.lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         return _err("read-only: only SELECT/WITH queries permitted")
+    # Cheap defense-in-depth: a clean error for the common case. The real gate is
+    # the read-only connection in _run_sql_blocking — any write fails there too.
     forbidden = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "attach ", "pragma ", "replace ")
     padded = f" {lowered} "
     for kw in forbidden:
         if kw in padded:
             return _err(f"forbidden keyword: {kw.strip()}")
-    with db.connect() as conn:
-        try:
-            rows = [dict(r) for r in conn.execute(q).fetchmany(500)]
-        except Exception as e:
-            return _err(str(e))
+    try:
+        rows = await asyncio.to_thread(_run_sql_blocking, q)
+    except sqlite3.OperationalError as e:
+        # "interrupted" is the deadline abort; "readonly database" is a write
+        # attempt that slipped past the denylist. Don't leak the raw string.
+        if "interrupt" in str(e).lower():
+            return _err("query exceeded time budget")
+        return _err("query failed: operational error")
+    except sqlite3.Error:
+        return _err("query failed: invalid query")
     return _text({"rows": rows, "count": len(rows)})
 
 
@@ -717,6 +802,15 @@ async def log_observation(args: dict) -> dict:
         value_num = None
         value_text = text
     observed_on = args.get("date") or date.today().isoformat()
+    # Validate the user-supplied date BEFORE any write — mirror log_manual_workout.
+    # A malformed string sorts wrong; a future date is silently excluded from the
+    # days-filtered list_observations lookback.
+    try:
+        parsed_date = date.fromisoformat(observed_on)
+    except ValueError:
+        return _err(f"invalid date '{observed_on}', expected YYYY-MM-DD")
+    if parsed_date > date.today():
+        return _err("date cannot be in the future")
     created_at = datetime.now().isoformat()
     activity_id = args.get("activity_id")
     with db.connect() as conn:
@@ -759,8 +853,11 @@ async def list_observations(args: dict) -> dict:
     where: list[str] = []
     params: list = []
     if args.get("days"):
+        err = _validate_days(args["days"])
+        if err:
+            return _err(err)
         where.append("observed_on >= ?")
-        params.append((date.today() - timedelta(days=int(args["days"]))).isoformat())
+        params.append((date.today() - timedelta(days=args["days"])).isoformat())
     if args.get("obs_type"):
         where.append("obs_type = ?")
         params.append(args["obs_type"])
@@ -821,9 +918,20 @@ async def log_manual_workout(args: dict) -> dict:
     # Validate the user-supplied date BEFORE any write — a malformed string must
     # not commit the activity row and then raise in the post-insert lookback.
     try:
-        date.fromisoformat(workout_date)
+        parsed_date = date.fromisoformat(workout_date)
     except ValueError:
         return _err(f"invalid date '{workout_date}', expected YYYY-MM-DD")
+    # A non-positive duration would store garbage duration_seconds; reject it
+    # before any write.
+    try:
+        if float(duration_min) <= 0:
+            return _err("duration_min must be positive")
+    except (TypeError, ValueError):
+        return _err("duration_min must be positive")
+    # A future-dated workout would be stored but never feed CTL/ATL (recompute
+    # only walks dates <= today). Reject it before any write.
+    if parsed_date > date.today():
+        return _err("date cannot be in the future")
     distance_meters = (
         float(args["distance_mi"]) * units._METERS_PER_MILE
         if args.get("distance_mi") is not None else None
@@ -863,7 +971,23 @@ async def log_manual_workout(args: dict) -> dict:
     from ..ingest import baselines
     wdate = date.fromisoformat(workout_date)
     lookback = max(baselines.RECOMPUTE_LOOKBACK_DAYS, (date.today() - wdate).days + 1)
-    baselines.recompute(lookback_days=lookback)
+    # The activity row is ALREADY committed (db.connect() committed on block
+    # exit). recompute() runs on a fresh connection; if it raises (transient
+    # "database is locked", a bad stored date, ...) we must NOT propagate — a
+    # bare raise reads as a tool failure and a blind retry would insert a SECOND
+    # workout, double-counting load. Return a partial-success so the caller can
+    # tell the row landed and skip the retry.
+    try:
+        baselines.recompute(lookback_days=lookback)
+    except Exception as e:  # noqa: BLE001 — row is committed; never re-raise here
+        return _text({
+            "logged": True,
+            "activity": _augment_workout(result),
+            "recompute_failed": True,
+            "warning": "workout saved but training-load recompute failed; "
+                       "run `fitness baselines` to refresh",
+            "error_detail": str(e),
+        })
 
     return _text({
         "logged": True,
@@ -902,13 +1026,183 @@ async def delete_manual_workout(args: dict) -> dict:
     from ..ingest import baselines
     wdate = date.fromisoformat(workout_date)
     lookback = max(baselines.RECOMPUTE_LOOKBACK_DAYS, (date.today() - wdate).days + 1)
-    baselines.recompute(lookback_days=lookback)
+    # The delete is ALREADY committed. recompute() runs on a fresh connection;
+    # if it raises, don't propagate a bare exception that implies the delete
+    # failed — the row is gone. Return a partial-success instead.
+    try:
+        baselines.recompute(lookback_days=lookback)
+    except Exception as e:  # noqa: BLE001 — delete is committed; never re-raise
+        return _text({
+            "deleted": True,
+            "activity_id": aid,
+            "recompute_failed": True,
+            "warning": "workout deleted but training-load recompute failed; "
+                       "run `fitness baselines` to refresh",
+            "error_detail": str(e),
+        })
 
     return _text({
         "deleted": True,
         "activity_id": aid,
         "note": f"training load recomputed (lookback_days={lookback})",
     })
+
+
+# --- Training plans (the first agent->SQLite write path; DRAFT-ONLY) -------
+#
+# The model can only ever create/edit DRAFT plans. `status` is never an input:
+# propose hardcodes 'draft', revise builds its update from named goal params
+# only (never status), and revise refuses a non-draft target. Activating or
+# deleting a plan is a human action via the REST layer — there is no tool for
+# it. See plans.py for the enforced write boundary.
+
+_PROPOSE_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "goal_type": {"type": "string", "description": "5k | 10k | half | full | custom"},
+        "race_date": {"type": "string", "description": "ISO YYYY-MM-DD"},
+        "target_time_seconds": {"type": "integer", "description": "Goal finish time in seconds"},
+        "goal_distance_m": {"type": "number", "description": "Race distance (m); defaults from goal_type"},
+        "title": {"type": "string"},
+        "ability_snapshot": {"type": "object", "description": "Current-ability estimate you derived from the athlete's data"},
+        "workouts": {
+            "type": "array",
+            "description": "Full schedule: each {date, week_index, type, target_distance_m?, target_pace_sec_per_km?, target_duration_sec?, description, seq?}",
+            "items": {"type": "object"},
+        },
+    },
+    "required": ["goal_type", "race_date", "workouts"],
+}
+
+_REVISE_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "plan_id": {"type": "integer"},
+        "goal_type": {"type": "string"},
+        "race_date": {"type": "string"},
+        "target_time_seconds": {"type": "integer"},
+        "goal_distance_m": {"type": "number"},
+        "title": {"type": "string"},
+        "workouts": {"type": "array", "items": {"type": "object"}},
+    },
+    "required": ["plan_id"],
+}
+
+_EDITABLE_TOOL_FIELDS = ("goal_type", "race_date", "target_time_seconds", "goal_distance_m", "title")
+
+
+@tool(
+    "propose_training_plan",
+    "Create a DRAFT training plan from a goal + a full workout schedule you "
+    "generated. Ground it first: call training_load_status, get_today_status, "
+    "and query_workouts to read the athlete's real fitness before proposing. "
+    "Archives any prior draft. Does NOT activate the plan — the user commits it.",
+    _PROPOSE_PLAN_SCHEMA,
+)
+async def propose_training_plan(args: dict) -> dict:
+    goal_type = args.get("goal_type")
+    race_date = args.get("race_date")
+    workouts = args.get("workouts")
+    if not goal_type or not race_date:
+        return _err("goal_type and race_date are required")
+    goal_distance_m = args.get("goal_distance_m") or plans.GOAL_DISTANCE_M.get(goal_type)
+    target_time = args.get("target_time_seconds")
+    created_floor = db.last_known_daily_date() or date.today().isoformat()
+    err = plans.validate_plan_input(
+        goal_type, race_date, workouts or [], created_floor, goal_distance_m, target_time
+    )
+    if err:
+        return _err(err)
+    plan_id = plans.insert_draft(
+        {
+            "goal_type": goal_type,
+            "race_date": race_date,
+            "target_time_seconds": target_time,
+            "goal_distance_m": goal_distance_m,
+            "title": args.get("title"),
+            "ability_snapshot": args.get("ability_snapshot"),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        workouts,
+    )
+    return _text({"plan_id": plan_id, "status": "draft"})
+
+
+@tool(
+    "revise_training_plan",
+    "Revise the DRAFT plan during a riff: update goal fields and/or replace the "
+    "workout set wholesale. Only works on a draft (refuses active/archived "
+    "plans). Cannot change a plan's status — the user commits via the UI.",
+    _REVISE_PLAN_SCHEMA,
+)
+async def revise_training_plan(args: dict) -> dict:
+    plan_id = args.get("plan_id")
+    if not isinstance(plan_id, int):
+        return _err("plan_id (int) is required")
+    # status is deliberately NOT among the readable fields — it can never be set here.
+    fields = {k: args[k] for k in _EDITABLE_TOOL_FIELDS if k in args}
+    workouts = args.get("workouts")
+
+    if workouts is not None:
+        current = plans.get_plan(plan_id)
+        if current is None:
+            return _err(f"no plan {plan_id}")
+        gt = fields.get("goal_type", current["goal_type"])
+        rd = fields.get("race_date", current["race_date"])
+        created_floor = db.last_known_daily_date() or date.today().isoformat()
+        err = plans.validate_plan_input(
+            gt, rd, workouts, created_floor,
+            fields.get("goal_distance_m", current.get("goal_distance_m")),
+            fields.get("target_time_seconds", current.get("target_time_seconds")),
+        )
+        if err:
+            return _err(err)
+    try:
+        plans.revise_draft(plan_id, fields, workouts)
+    except (plans.PlanNotFoundError, plans.NotDraftError, ValueError) as e:
+        return _err(str(e))
+    return _text({"plan_id": plan_id, "status": "draft"})
+
+
+@tool(
+    "get_training_plan_status",
+    "Status of the ACTIVE training plan: goal, days to race, the most recent "
+    "graded day's prescription + verdict, today's prescribed session, and "
+    "overall adherence. Returns {active: false} when there is no active plan. "
+    "Call this first in a brief to decide whether to fold the plan in.",
+    {},
+)
+async def get_training_plan_status(_args: dict) -> dict:
+    active = plans.get_active_plan()
+    if active is None:
+        return _text({"active": False})
+    frontier = db.last_known_daily_date()
+    today = date.today().isoformat()
+    dates = [w["date"] for w in active["workouts"]] or [today]
+    start = min(dates)
+    end = max([today, *dates] + ([frontier] if frontier else []))
+    activities_by_date = plans.load_activities_by_date(start, end)
+    return _text(plans.build_plan_status(active, frontier, activities_by_date, today))
+
+
+@tool(
+    "save_brief",
+    "Persist a composed daily brief. Pass the brief as JSON matching the Brief "
+    "schema (a `takeaways` list; date/user_name/generated_at are stamped "
+    "server-side). The server validates against the schema and atomically "
+    "writes briefings/<today>.json — invalid briefs are rejected. Use this "
+    "after composing the brief via the `brief` prompt.",
+    {"brief": dict},
+)
+async def save_brief(args: dict) -> dict:
+    # Thin wrapper over briefs.save_brief (the single integrity gate). DROP the
+    # returned `brief` pydantic object — only the {saved,date,path} scalars are
+    # _text-wrapped (a pydantic Brief through json.dumps would raise TypeError).
+    try:
+        result = briefs.save_brief(args["brief"])
+    except ValidationError as e:
+        return _err(f"brief failed schema validation: {e}")
+    return _text({"saved": True, "date": result["date"], "path": result["path"]})
 
 
 ALL_TOOLS = [
@@ -933,11 +1227,15 @@ ALL_TOOLS = [
     delete_observation,
     log_manual_workout,
     delete_manual_workout,
+    propose_training_plan,
+    revise_training_plan,
+    get_training_plan_status,
+    save_brief,
 ]
 
 
 def make_server():
-    return create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=ALL_TOOLS)
+    return create_sdk_mcp_server(name=SERVER_NAME, version="0.4.0", tools=ALL_TOOLS)
 
 
 def allowed_tool_names() -> list[str]:

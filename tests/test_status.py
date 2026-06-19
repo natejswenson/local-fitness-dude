@@ -115,3 +115,22 @@ def test_coach_prompt_renders_each_note_once(seeded_status_db):
     res = asyncio.run(handler(req))
     text = res.root.messages[0].content.text
     assert text.count("lead with the workout card") == 1
+
+
+def test_coach_prompt_includes_output_formatting_contract(seeded_status_db):
+    # The coach prompt must steer the model toward narrow/monospace-friendly
+    # layouts so its reply renders cleanly in the MCP client.
+    from mcp import types
+    from local_fitness.web import mcp_server
+
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.GetPromptRequest]
+    req = types.GetPromptRequest(
+        method="prompts/get",
+        params=types.GetPromptRequestParams(name="coach", arguments=None),
+    )
+    res = asyncio.run(handler(req))
+    text = res.root.messages[0].content.text
+    # The contract is inherited via the embedded system_prompt persona.
+    assert "Formatting your chat replies" in text
+    assert "NOT one wide grid" in text

@@ -160,6 +160,39 @@ CREATE TABLE IF NOT EXISTS observations (
 );
 CREATE INDEX IF NOT EXISTS idx_obs_date ON observations(observed_on);
 CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(obs_type);
+
+CREATE TABLE IF NOT EXISTS training_plans (
+    plan_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    status               TEXT NOT NULL,          -- 'draft' | 'active' | 'archived'
+    goal_type            TEXT NOT NULL,          -- '5k'|'10k'|'half'|'full'|'custom'
+    goal_distance_m      REAL,                   -- nullable: 'custom' may have no canonical distance
+    race_date            TEXT NOT NULL,          -- ISO YYYY-MM-DD
+    target_time_seconds  INTEGER,                -- nullable for 'just finish'
+    title                TEXT,
+    ability_snapshot     TEXT,                   -- JSON: AI's current-ability estimate at creation
+    created_at           TEXT NOT NULL,          -- ISO timestamp
+    committed_at         TEXT                    -- ISO timestamp when draft -> active
+);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON training_plans(status);
+-- Single-active invariant enforced by the DB: a commit race fails loudly rather
+-- than silently creating two active plans.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_plan
+    ON training_plans(status) WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS plan_workouts (
+    workout_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id                INTEGER NOT NULL,     -- -> training_plans.plan_id
+    date                   TEXT NOT NULL,        -- ISO YYYY-MM-DD
+    seq                    INTEGER NOT NULL DEFAULT 1,  -- intra-day order (AM/PM double-days)
+    week_index             INTEGER NOT NULL,     -- 1-based week within the plan
+    type                   TEXT NOT NULL,        -- easy|long|tempo|interval|rest|race|cross
+    target_distance_m      REAL,                 -- null for rest / by-feel
+    target_pace_sec_per_km REAL,                 -- null for rest / easy-by-feel
+    target_duration_sec    INTEGER,              -- used for interval/tempo/cross adherence
+    description            TEXT NOT NULL         -- prose prescription
+);
+CREATE INDEX IF NOT EXISTS idx_plan_workouts_plan ON plan_workouts(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_workouts_date ON plan_workouts(date);
 """
 
 
@@ -182,6 +215,26 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def connect_readonly(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Open the DB in SQLite read-only mode (engine-enforced, not keyword-based).
+
+    Used by the run_sql tool so ANY write/DDL (INSERT/UPDATE/DELETE/DROP/...)
+    raises `sqlite3.OperationalError: attempt to write a readonly database`
+    regardless of how the query is phrased — the read-only URI is the real
+    gate, not a denylist. Mirrors `connect`'s `row_factory = sqlite3.Row`, but
+    opens `mode=ro` and never commits. Extension loading is left disabled
+    (SQLite's default) so `load_extension` stays blocked.
+    """
+    path = db_path or get_db_path()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
     finally:
         conn.close()
 

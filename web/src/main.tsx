@@ -5,6 +5,7 @@ import App from './App'
 import { AuthGate } from './components/AuthGate'
 import { Dashboards } from './components/Dashboards'
 import { Today } from './components/Today'
+import { TrainingPlan } from './components/TrainingPlan'
 import { Trends } from './components/Trends'
 import './index.css'
 
@@ -15,6 +16,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route element={<App />}>
             <Route index element={<Today />} />
+            <Route path="plan" element={<TrainingPlan />} />
             <Route path="trends" element={<Trends />} />
             <Route path="dashboards" element={<Dashboards />} />
             {/* legacy /chat → home */}

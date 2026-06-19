@@ -11,7 +11,7 @@ from local_fitness.ingest import baselines
 
 def test_imports():
     """All modules import without errors."""
-    from local_fitness.agent import briefing, chat, prompts  # noqa
+    from local_fitness.agent import briefing, prompts  # noqa
     from local_fitness.ingest import auth, backfill, daily  # noqa
     from local_fitness import cli  # noqa
 
@@ -39,7 +39,7 @@ def test_baselines_empty_db(tmp_path: Path, monkeypatch):
 
 def test_tool_schemas_well_formed():
     """Every tool has a name + description + handler."""
-    assert len(agent_tools.ALL_TOOLS) == 21
+    assert len(agent_tools.ALL_TOOLS) == 25
     for t in agent_tools.ALL_TOOLS:
         assert t.name
         assert t.description
