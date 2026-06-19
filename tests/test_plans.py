@@ -54,6 +54,29 @@ def test_validate_rejects_negative_numeric():
     assert err
 
 
+def test_validate_rejects_wrong_typed_numeric_field():
+    # A string where a number is expected must yield the clean indexed error,
+    # not a raw TypeError out of math.isfinite().
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(target_distance_m="fast")], created_date="2026-06-15")
+    assert err == "workout 0: target_distance_m must be a number"
+
+
+def test_validate_rejects_bool_numeric_field():
+    # bool is an int subclass in Python; it must be rejected as not-a-number.
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(target_distance_m=True)], created_date="2026-06-15")
+    assert err == "workout 0: target_distance_m must be a number"
+
+
+def test_validate_rejects_non_string_description():
+    # A dict/list description must yield the clean indexed error, not a raw
+    # AttributeError out of .strip().
+    err = plans.validate_plan_input("10k", "2026-09-14",
+        workouts=[_wk(description={"oops": 1})], created_date="2026-06-15")
+    assert err == "workout 0: description must be a string"
+
+
 def test_validate_rejects_bad_date():
     err = plans.validate_plan_input("10k", "2026-13-99",
         workouts=[_wk()], created_date="2026-06-15")

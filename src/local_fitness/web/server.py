@@ -163,12 +163,17 @@ def _is_public_path(path: str) -> bool:
     bad-token request to 401 so the login screen can re-prompt."""
     if path == "/health":
         return True
+    # Compare case-insensitively: the router matches API/MCP routes case-
+    # sensitively, so an uppercase `/API/TODAY` matches no real route and would
+    # otherwise fall to the SPA catch-all and be treated as public. Normalizing
+    # here keeps the auth gate and the router in agreement.
+    lowered = path.lower()
     # The MCP endpoint is auth-gated like /api/* (NOT public). Gate it
     # explicitly — it lives outside the /api/ prefix, and the default below
     # treats non-/api/ paths as public, which would expose it.
-    if path == "/mcp" or path.startswith("/mcp/"):
+    if lowered == "/mcp" or lowered.startswith("/mcp/"):
         return False
-    if not path.startswith("/api/"):
+    if not lowered.startswith("/api/"):
         return True  # SPA shell, /assets/*, etc. — handled by static routes
     return False
 

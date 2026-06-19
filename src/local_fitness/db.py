@@ -219,6 +219,26 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+@contextmanager
+def connect_readonly(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Open the DB in SQLite read-only mode (engine-enforced, not keyword-based).
+
+    Used by the run_sql tool so ANY write/DDL (INSERT/UPDATE/DELETE/DROP/...)
+    raises `sqlite3.OperationalError: attempt to write a readonly database`
+    regardless of how the query is phrased — the read-only URI is the real
+    gate, not a denylist. Mirrors `connect`'s `row_factory = sqlite3.Row`, but
+    opens `mode=ro` and never commits. Extension loading is left disabled
+    (SQLite's default) so `load_extension` stays blocked.
+    """
+    path = db_path or get_db_path()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def init_schema(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)

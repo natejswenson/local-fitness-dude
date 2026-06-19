@@ -40,6 +40,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/api/brief/generate*` endpoints, the `chat`/`ask` CLI commands, and the
   `ChatPanel` / `DashboardInsight` frontend components.
 
+### Security
+- **`run_sql` is now read-only at the SQLite engine, not by keyword matching.**
+  The MCP `run_sql` tool opens a `mode=ro` connection (`db.connect_readonly`), so
+  any INSERT/UPDATE/DELETE/DDL fails at the engine regardless of phrasing. This
+  closes a bypass where a `WITH`-prefixed query with a newline/tab after the
+  write keyword (`WITH a AS (SELECT 1)\ndelete\nfrom …`) slipped the prefix and
+  space-padded-keyword denylist and committed. The denylist stays as
+  defense-in-depth.
+- **`run_sql` is time-bounded and non-blocking.** A `set_progress_handler`
+  deadline (5s) aborts runaway queries with a clean error, and execution is
+  offloaded via `asyncio.to_thread`, so a heavy query can no longer freeze the
+  single-threaded server (authenticated DoS).
+- **MCP tools validate window/numeric inputs.** Date-window tools
+  (`get_metric`, `get_metric_trend`, `query_workouts`, `find_anomalies`,
+  `recovery_pattern`, `correlate`, `list_observations`) reject out-of-range /
+  non-int `days`/`lookback_days`/`lag_days` via `_validate_days` instead of
+  raising `OverflowError`; the plan validator rejects wrong-typed workout fields
+  with clean indexed errors instead of `TypeError`/`AttributeError`.
+- **`_is_public_path` is case-normalized** so an uppercase `/API/…` can't be
+  treated as a public (SPA) path while bypassing the lowercase `/api/` gate.
+- `run_sql` no longer echoes raw SQLite exception strings.
+
 ### Fixed
 - Container build: build the SPA on Debian (glibc) instead of Alpine (musl) and
   pin pnpm so Vite 8's rolldown native binding installs; harden uv/pnpm fetch

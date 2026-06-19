@@ -120,10 +120,22 @@ def validate_plan_input(
 
         for field in _NUMERIC_FIELDS:
             v = w.get(field)
-            if v is not None and (not math.isfinite(v) or v < 0):
+            if v is None:
+                continue
+            # Reject wrong-typed values with the function's clean indexed error
+            # rather than letting math.isfinite() raise a raw TypeError. Exclude
+            # bool explicitly: isinstance(True, int) is True in Python.
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return f"workout {i}: {field} must be a number"
+            if not math.isfinite(v) or v < 0:
                 return f"workout {i}: {field} must be finite and non-negative"
 
-        if not (w.get("description") or "").strip():
+        desc = w.get("description")
+        # Reject a non-string description with a clean indexed error rather than
+        # letting .strip() raise a raw AttributeError on a dict/list.
+        if desc is not None and not isinstance(desc, str):
+            return f"workout {i}: description must be a string"
+        if not (desc or "").strip():
             return f"workout {i}: description is required"
 
         seq = int(w.get("seq") or 1)

@@ -258,6 +258,77 @@ def test_run_sql_bad_query(seeded):
     assert err
 
 
+# --- day-window robustness: over-large N must be a clean _err, not OverflowError ---
+
+_BIG = 10**9  # timedelta(days=N) raises OverflowError around here
+
+
+def test_get_metric_rejects_huge_days(seeded):
+    payload, err = call(tools.get_metric, {"metric": "rhr", "days": _BIG})
+    assert err
+    assert "days must be between" in payload["error"]
+
+
+def test_get_metric_trend_rejects_huge_days(seeded):
+    payload, err = call(tools.get_metric_trend, {"metric": "rhr", "days": _BIG})
+    assert err
+    assert "days must be between" in payload["error"]
+
+
+def test_get_metric_trend_rejects_single_point_window(seeded):
+    # days:0/1 yields a degenerate single-sample trend; lo=2 rejects it cleanly.
+    for bad in (0, 1):
+        payload, err = call(tools.get_metric_trend, {"metric": "rhr", "days": bad})
+        assert err
+        assert "days must be between" in payload["error"]
+
+
+def test_query_workouts_rejects_huge_days(seeded):
+    payload, err = call(tools.query_workouts, {"days": _BIG})
+    assert err
+    assert "days must be between" in payload["error"]
+
+
+def test_find_anomalies_rejects_huge_lookback(seeded):
+    payload, err = call(tools.find_anomalies, {"metric": "rhr", "lookback_days": _BIG})
+    assert err
+    assert "lookback_days must be between" in payload["error"]
+
+
+def test_recovery_pattern_rejects_huge_lookback(seeded):
+    payload, err = call(tools.recovery_pattern, {"lookback_days": _BIG})
+    assert err
+    assert "lookback_days must be between" in payload["error"]
+
+
+def test_correlate_rejects_huge_days(seeded):
+    payload, err = call(
+        tools.correlate,
+        {"metric_a": "sleep_seconds", "metric_b": "rhr", "days": _BIG},
+    )
+    assert err
+    assert "days must be between" in payload["error"]
+
+
+def test_correlate_rejects_huge_lag(seeded):
+    payload, err = call(
+        tools.correlate,
+        {"metric_a": "sleep_seconds", "metric_b": "rhr", "days": 30, "lag_days": _BIG},
+    )
+    assert err
+    assert "lag_days must be between" in payload["error"]
+
+
+def test_correlate_allows_negative_lag(seeded):
+    # A small negative lag is legitimate (sign flips which metric leads) and
+    # must not be rejected by the bounds check.
+    _payload, err = call(
+        tools.correlate,
+        {"metric_a": "sleep_seconds", "metric_b": "rhr", "days": 30, "lag_days": -1},
+    )
+    assert not err
+
+
 # --- notes tools (use LOCAL_FITNESS_NOTES_PATH from the fixture) ---
 
 def test_save_and_list_user_notes(seeded):
@@ -343,6 +414,14 @@ def test_log_observation_numeric_and_text_roundtrip(seeded):
     assert listed["count"] == 2
     texts = {o["obs_type"] for o in listed["observations"]}
     assert texts == {"weight", "note"}
+
+
+def test_list_observations_rejects_huge_days(seeded):
+    # Same finding class as the date-window analysis tools: a huge `days` must
+    # be a clean _err, not a raw OverflowError out of timedelta().
+    payload, err = call(tools.list_observations, {"days": _BIG})
+    assert err
+    assert "days must be between" in payload["error"]
 
 
 def test_log_observation_invalid_obs_type(seeded):

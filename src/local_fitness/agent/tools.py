@@ -7,7 +7,10 @@ column names — no user input ever interpolates into SQL except via params.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -107,6 +110,24 @@ def _err(msg: str, **extra) -> dict:
     return {"content": [{"type": "text", "text": json.dumps({"error": msg, **extra})}], "is_error": True}
 
 
+def _validate_days(value: Any, name: str = "days", *, lo: int = 1, hi: int = 3650) -> str | None:
+    """Bounds-check a user-supplied day count before it reaches timedelta().
+
+    Returns an error string (for the caller to wrap with ``_err``) or ``None``
+    when valid. ``timedelta(days=N)`` raises a raw OverflowError once N exceeds
+    ~10**9; the REST layer clamps these via ``Query(ge=, le=)`` but the tool
+    surface didn't. Rejects non-ints (and bool, since ``isinstance(True, int)``
+    is True) and anything outside ``[lo, hi]`` with a clean, bounded message.
+    Mirrors how these tools already reject bad metric names (a clear error, not
+    a silent clamp).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"{name} must be an integer between {lo} and {hi}"
+    if value < lo or value > hi:
+        return f"{name} must be between {lo} and {hi}"
+    return None
+
+
 def _augment_workout(w: dict) -> dict:
     """Attach mile / formatted convenience fields ALONGSIDE the raw columns.
 
@@ -162,9 +183,12 @@ async def get_today_status(_args: dict) -> dict:
 )
 async def get_metric(args: dict) -> dict:
     metric = args["metric"]
-    days = int(args["days"])
     if metric not in DAILY_NUMERIC_METRICS:
         return _err(f"unknown metric '{metric}'", allowed=sorted(DAILY_NUMERIC_METRICS))
+    err = _validate_days(args["days"])
+    if err:
+        return _err(err)
+    days = args["days"]
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
         rows = conn.execute(
@@ -181,9 +205,13 @@ async def get_metric(args: dict) -> dict:
 )
 async def get_metric_trend(args: dict) -> dict:
     metric = args["metric"]
-    days = int(args["days"])
     if metric not in DAILY_NUMERIC_METRICS:
         return _err(f"unknown metric '{metric}'", allowed=sorted(DAILY_NUMERIC_METRICS))
+    # lo=2: a trend (slope, current-vs-mean) is meaningless on a single sample.
+    err = _validate_days(args["days"], lo=2)
+    if err:
+        return _err(err)
+    days = args["days"]
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
         rows = conn.execute(
@@ -248,8 +276,11 @@ async def query_workouts(args: dict) -> dict:
         where.append("activity_type LIKE ?")
         params.append(f"%{args['activity_type']}%")
     if args.get("days"):
+        err = _validate_days(args["days"])
+        if err:
+            return _err(err)
         where.append("date >= ?")
-        params.append((date.today() - timedelta(days=int(args["days"]))).isoformat())
+        params.append((date.today() - timedelta(days=args["days"])).isoformat())
     if args.get("min_distance_km"):
         where.append("distance_meters >= ?")
         params.append(float(args["min_distance_km"]) * 1000)
@@ -356,7 +387,10 @@ async def find_anomalies(args: dict) -> dict:
     metric = args["metric"]
     if metric not in BASELINE_METRICS:
         return _err("only baseline-tracked metrics supported", allowed=sorted(BASELINE_METRICS))
-    days = int(args.get("lookback_days") or 90)
+    days = args.get("lookback_days") or 90
+    err = _validate_days(days, name="lookback_days")
+    if err:
+        return _err(err)
     threshold = float(args.get("sd_threshold") or 2.0)
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     with db.connect() as conn:
@@ -429,8 +463,16 @@ async def correlate(args: dict) -> dict:
     b = args["metric_b"]
     if a not in DAILY_NUMERIC_METRICS or b not in DAILY_NUMERIC_METRICS:
         return _err("metrics must be daily numeric", allowed=sorted(DAILY_NUMERIC_METRICS))
-    days = int(args["days"])
-    lag = int(args.get("lag_days") or 0)
+    err = _validate_days(args["days"])
+    if err:
+        return _err(err)
+    days = args["days"]
+    # lag may legitimately be 0 or negative (sign flips which metric leads);
+    # bound its magnitude so days + abs(lag) + 1 can't overflow timedelta().
+    lag = args.get("lag_days") or 0
+    lag_err = _validate_days(lag, name="lag_days", lo=-365, hi=365)
+    if lag_err:
+        return _err(lag_err)
     cutoff = (date.today() - timedelta(days=days + abs(lag) + 1)).isoformat()
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute(
@@ -494,7 +536,10 @@ async def recovery_pattern(args: dict) -> dict:
     if args.get("min_duration_min"):
         where.append("duration_seconds >= ?")
         params.append(int(args["min_duration_min"]) * 60)
-    lookback = int(args.get("lookback_days") or 365)
+    lookback = args.get("lookback_days") or 365
+    err = _validate_days(lookback, name="lookback_days")
+    if err:
+        return _err(err)
     where.append("date >= ?")
     params.append((date.today() - timedelta(days=lookback)).isoformat())
     where_sql = " AND ".join(where)
@@ -554,6 +599,36 @@ async def recovery_pattern(args: dict) -> dict:
     })
 
 
+# Wall-clock budget for a single run_sql query. A heavier query is aborted by
+# the SQLite progress handler so a recursive CTE / cartesian join can't hang the
+# (single-threaded) server. Granularity: how many VM ops between deadline checks.
+_RUN_SQL_TIME_BUDGET_S = 5.0
+_RUN_SQL_PROGRESS_OPS = 10_000
+
+
+def _run_sql_blocking(q: str) -> list[dict]:
+    """Execute `q` against a READ-ONLY connection with a wall-clock deadline.
+
+    The read-only connection is the real write gate (engine-enforced); the
+    keyword denylist in run_sql is only defense-in-depth. The progress handler
+    aborts once the deadline passes, which makes SQLite raise OperationalError.
+    Runs in a worker thread (via asyncio.to_thread) so even a within-budget
+    heavy query never blocks the event loop.
+    """
+    deadline = time.monotonic() + _RUN_SQL_TIME_BUDGET_S
+
+    def _abort_if_over_budget() -> int:
+        # Truthy return => SQLite interrupts the running statement.
+        return 1 if time.monotonic() > deadline else 0
+
+    with db.connect_readonly() as conn:
+        conn.set_progress_handler(_abort_if_over_budget, _RUN_SQL_PROGRESS_OPS)
+        try:
+            return [dict(r) for r in conn.execute(q).fetchmany(500)]
+        finally:
+            conn.set_progress_handler(None, 0)
+
+
 @tool(
     "run_sql",
     "Execute a read-only SELECT or WITH query against the fitness DB. "
@@ -566,16 +641,23 @@ async def run_sql(args: dict) -> dict:
     lowered = q.lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         return _err("read-only: only SELECT/WITH queries permitted")
+    # Cheap defense-in-depth: a clean error for the common case. The real gate is
+    # the read-only connection in _run_sql_blocking — any write fails there too.
     forbidden = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "attach ", "pragma ", "replace ")
     padded = f" {lowered} "
     for kw in forbidden:
         if kw in padded:
             return _err(f"forbidden keyword: {kw.strip()}")
-    with db.connect() as conn:
-        try:
-            rows = [dict(r) for r in conn.execute(q).fetchmany(500)]
-        except Exception as e:
-            return _err(str(e))
+    try:
+        rows = await asyncio.to_thread(_run_sql_blocking, q)
+    except sqlite3.OperationalError as e:
+        # "interrupted" is the deadline abort; "readonly database" is a write
+        # attempt that slipped past the denylist. Don't leak the raw string.
+        if "interrupt" in str(e).lower():
+            return _err("query exceeded time budget")
+        return _err("query failed: operational error")
+    except sqlite3.Error:
+        return _err("query failed: invalid query")
     return _text({"rows": rows, "count": len(rows)})
 
 
@@ -771,8 +853,11 @@ async def list_observations(args: dict) -> dict:
     where: list[str] = []
     params: list = []
     if args.get("days"):
+        err = _validate_days(args["days"])
+        if err:
+            return _err(err)
         where.append("observed_on >= ?")
-        params.append((date.today() - timedelta(days=int(args["days"]))).isoformat())
+        params.append((date.today() - timedelta(days=args["days"])).isoformat())
     if args.get("obs_type"):
         where.append("obs_type = ?")
         params.append(args["obs_type"])
