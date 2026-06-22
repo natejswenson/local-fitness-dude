@@ -5,7 +5,7 @@
 # native binding ships per-platform. The musl binding fails to resolve under
 # pnpm on alpine (MODULE_NOT_FOUND at `vite build`); the gnu binding on slim
 # is the supported, well-tested path.
-FROM node:22-bookworm-slim AS web-builder
+FROM node:26-bookworm-slim AS web-builder
 WORKDIR /web
 
 # Use pnpm via corepack (matches the host workflow).
