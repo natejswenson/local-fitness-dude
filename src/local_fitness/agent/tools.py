@@ -1240,6 +1240,7 @@ async def get_training_plan_progress(_args: dict) -> dict:
             "verdict": w.get("verdict"),
             "actual_distance_m": w.get("actual_distance_m"),
             "actual_pace_sec_per_km": w.get("actual_pace_sec_per_km"),
+            "actual_activity_types": w.get("actual_activity_types"),
         }
         for w in detail["workouts"]
     ]

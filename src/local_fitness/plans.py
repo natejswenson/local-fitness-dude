@@ -37,6 +37,12 @@ GOAL_DISTANCE_M = {"5k": 5000.0, "10k": 10000.0, "half": 21097.5, "full": 42195.
 #: substrings that mark an activity_type as a run
 _RUNNING_SUBSTRINGS = ("running", "run")
 
+#: substrings that mark an activity_type as a walk/hike (on-foot, non-running).
+#: NOTE: before relying on this in production, confirm `SELECT DISTINCT
+#: activity_type FROM activities` has no type that spuriously contains "walk"/
+#: "hik" — observed types are running, treadmill_running, walking (no collision).
+_WALKING_SUBSTRINGS = ("walk", "hik")
+
 # workout types graded on distance vs. duration
 _DISTANCE_TYPES = frozenset({"easy", "long", "race"})
 _DURATION_TYPES = frozenset({"interval", "tempo"})
@@ -51,6 +57,16 @@ _NUMERIC_FIELDS = ("target_distance_m", "target_pace_sec_per_km",
 def _is_running(activity_type: str | None) -> bool:
     at = (activity_type or "").lower()
     return any(s in at for s in _RUNNING_SUBSTRINGS)
+
+
+def _is_walking(activity_type: str | None) -> bool:
+    at = (activity_type or "").lower()
+    return any(s in at for s in _WALKING_SUBSTRINGS)
+
+
+def _is_on_foot(activity_type: str | None) -> bool:
+    """Running OR walking — what counts toward easy/recovery foot distance."""
+    return _is_running(activity_type) or _is_walking(activity_type)
 
 
 def _parse_iso(value: str) -> _date | None:
@@ -74,6 +90,39 @@ def _running_duration(activities: list[dict]) -> float:
         for a in activities
         if _is_running(a.get("activity_type"))
     )
+
+
+def _foot_distance(activities: list[dict]) -> float:
+    """Distance (m) from on-foot activities — running OR walking. Used for
+    easy/recovery grading and for surfaced actuals (a recovery walk counts)."""
+    return sum(
+        (a.get("distance_meters") or 0.0)
+        for a in activities
+        if _is_on_foot(a.get("activity_type"))
+    )
+
+
+def _foot_duration(activities: list[dict]) -> float:
+    return sum(
+        (a.get("duration_seconds") or 0.0)
+        for a in activities
+        if _is_on_foot(a.get("activity_type"))
+    )
+
+
+def _normalize_activity_types(activities: list[dict]) -> list[str]:
+    """Normalized, deduped, sorted activity classes for a day: running | walking
+    | other. Surfaced so the plan view/agent can say 'walked' vs 'ran'."""
+    classes: set[str] = set()
+    for a in activities:
+        at = a.get("activity_type")
+        if _is_running(at):
+            classes.add("running")
+        elif _is_walking(at):
+            classes.add("walking")
+        elif at:
+            classes.add("other")
+    return sorted(classes)
 
 
 # --- Task 1.1: validation --------------------------------------------------
@@ -163,8 +212,13 @@ def classify_workout(workout: dict, day_activities: list[dict]) -> str:
 
     if wtype in _DISTANCE_TYPES:
         target = workout.get("target_distance_m")
-        actual = _running_distance(day_activities)
-        if not target:  # null/0 target → "by feel": any run counts
+        # Easy/recovery days count walking too (active recovery is the intent);
+        # long/race require running specificity, so walks don't count there.
+        actual = (
+            _foot_distance(day_activities) if wtype == "easy"
+            else _running_distance(day_activities)
+        )
+        if not target:  # null/0 target → "by feel": any qualifying activity counts
             return "done" if actual > 0 else "missed"
         frac = actual / target
         if frac >= DONE_FRACTION:
@@ -195,16 +249,24 @@ def classify_workout(workout: dict, day_activities: list[dict]) -> str:
 # --- Task 1.3: data-frontier grading --------------------------------------
 
 def grade_workout(workout: dict, day_activities: list[dict], frontier: str | None) -> str:
-    """Grade only days strictly before the data frontier; otherwise ``pending``.
+    """Grade a prescribed workout, holding not-yet-credited days as ``pending``.
 
-    ``frontier`` is ``db.last_known_daily_date()`` (the most recent day Garmin
-    data has arrived for). Days at or after it are ``pending`` — we have no data
-    yet, so we never report ``missed``. ISO ``YYYY-MM-DD`` strings compare
-    lexicographically in date order, so plain string comparison is safe.
+    Grade first, then keep ``pending`` only when the verdict is a *negative* one
+    (``missed`` or ``partial``) AND the day's data window is still open — i.e. at
+    or after the data frontier (``db.last_known_daily_date()``), the most recent
+    day Garmin data has arrived for. A ``done``/``compliant`` day grades
+    immediately, even today: a completed workout that's already synced should
+    show its verdict, not ``pending``. Holding ``partial`` too prevents a mid-day
+    half-done run from prematurely counting 0.5 in adherence and then self-healing
+    later in the day. ISO ``YYYY-MM-DD`` strings compare lexicographically in date
+    order, so plain string comparison is safe.
     """
-    if frontier is None or workout.get("date", "") >= frontier:
+    verdict = classify_workout(workout, day_activities)
+    if verdict in ("missed", "partial") and (
+        frontier is None or workout.get("date", "") >= frontier
+    ):
         return "pending"
-    return classify_workout(workout, day_activities)
+    return verdict
 
 
 # --- Task 1.4: Riegel projection + weekly mileage -------------------------
@@ -511,12 +573,23 @@ def _adherence_pct(graded_workouts: list[dict]) -> int | None:
     return round(100 * score / len(graded))
 
 
-def _workout_actuals(day_activities: list[dict]) -> tuple[float, float | None]:
-    """Actual running distance (m) and aggregate pace (sec/km) for a day."""
-    dist = _running_distance(day_activities)
-    dur = _running_duration(day_activities)
+def _workout_actuals(
+    day_activities: list[dict],
+) -> tuple[float, float | None, list[str]]:
+    """Foot-based actual distance (m), aggregate pace (sec/km), and the day's
+    normalized activity classes — surfaced so a recovery walk is visible.
+
+    Distance and pace cover on-foot activity (running + walking), so on a
+    walk-only day ``pace`` is *walking* pace: this is the actual pace of what was
+    done, not specifically running pace. ``activity_types`` is the normalized,
+    deduped, sorted set of activity classes for the day (``running``/``walking``/
+    ``other``). Surfacing is foot-based on every day regardless of workout type;
+    the verdict's type-awareness lives in ``classify_workout``, not here.
+    """
+    dist = _foot_distance(day_activities)
+    dur = _foot_duration(day_activities)
     pace = (dur / (dist / 1000.0)) if dist > 0 else None
-    return dist, pace
+    return dist, pace, _normalize_activity_types(day_activities)
 
 
 def build_plan_detail(
@@ -529,12 +602,13 @@ def build_plan_detail(
     graded = []
     for w in plan["workouts"]:
         day = activities_by_date.get(w["date"], [])
-        actual_dist, actual_pace = _workout_actuals(day)
+        actual_dist, actual_pace, actual_types = _workout_actuals(day)
         graded.append({
             **w,
             "verdict": grade_workout(w, day, frontier),
             "actual_distance_m": actual_dist,
             "actual_pace_sec_per_km": actual_pace,
+            "actual_activity_types": actual_types,
         })
     predicted = None
     if best_effort:

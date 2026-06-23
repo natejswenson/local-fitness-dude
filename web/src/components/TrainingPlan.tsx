@@ -16,20 +16,6 @@ const DRAFT_PLAN_PROMPT =
   'Build me a training plan from my recent Garmin data. My goal is a ' +
   '[5K/10K/half/full] on [race date], targeting about [finish time].'
 
-const DIST_HIT = 0.95 // within 5% of target distance counts as hit
-const PACE_HIT = 1.05 // within 5% slower than target pace counts as hit
-
-/** A past session missed if it fell short on distance OR was too slow. */
-function missedTargets(w: PlanWorkout): boolean {
-  if (w.verdict === 'pending' || w.type === 'rest') return false
-  if (w.actual_distance_m === 0) return true
-  const distMiss = w.target_distance_m != null && w.actual_distance_m < w.target_distance_m * DIST_HIT
-  const paceMiss =
-    w.target_pace_sec_per_km != null && w.actual_pace_sec_per_km != null &&
-    w.actual_pace_sec_per_km > w.target_pace_sec_per_km * PACE_HIT
-  return distMiss || paceMiss
-}
-
 const GOAL_LABELS: Record<string, string> = {
   '5k': '5K', '10k': '10K', half: 'Half Marathon', full: 'Marathon', custom: 'Custom',
 }
@@ -218,7 +204,10 @@ function PlanCalendarTable({ workouts }: { workouts: PlanWorkout[] }) {
               {workouts.map((w) => {
                 const isRest = w.type === 'rest'
                 const showActual = w.verdict !== 'pending' && !isRest
-                const missed = missedTargets(w)
+                // Color from the backend verdict (which counts a recovery walk
+                // as done on easy days), NOT a recomputed pace/distance miss —
+                // otherwise a walk-counted done row would paint red on walk pace.
+                const missed = w.verdict === 'missed'
                 return (
                   <tr key={w.workout_id} className="border-t border-border hover:bg-surface/50 align-top">
                     <td className="py-2 pr-3 whitespace-nowrap text-muted">{fmtDayLocal(w.date)}</td>

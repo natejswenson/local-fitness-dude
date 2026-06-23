@@ -167,6 +167,29 @@ def test_cross_matches_non_running_only():
     assert plans.classify_workout(w, [_run(5000, duration=1800)]) == "missed"
 
 
+# --- walks count on easy/recovery days, never on quality/long days --------
+
+def test_easy_counts_walking():
+    w = {"type": "easy", "target_distance_m": 6000.0}
+    assert plans.classify_workout(w, [_run(6200, atype="walking")]) == "done"
+    assert plans.classify_workout(w, [_run(3000, atype="walking")]) == "partial"
+
+
+def test_easy_null_target_walk_counts():
+    w = {"type": "easy", "target_distance_m": None}
+    assert plans.classify_workout(w, [_run(4000, atype="walking")]) == "done"
+
+
+def test_long_does_not_count_walking():
+    w = {"type": "long", "target_distance_m": 6000.0}
+    assert plans.classify_workout(w, [_run(6200, atype="walking")]) == "missed"
+
+
+def test_tempo_does_not_count_walking():
+    w = {"type": "tempo", "target_duration_sec": 2400}
+    assert plans.classify_workout(w, [_run(6200, duration=2400, atype="walking")]) == "missed"
+
+
 # --- Task 1.3: data-frontier grading --------------------------------------
 
 def test_future_or_unsynced_day_is_pending():
@@ -187,6 +210,42 @@ def test_past_day_is_graded():
 def test_no_frontier_means_pending():
     w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-05"}
     assert plans.grade_workout(w, [], frontier=None) == "pending"
+
+
+# --- outcome-based pending: a completed today grades; partial/missed held ---
+
+def test_today_with_run_grades_done_not_pending():
+    # today (== frontier) with a qualifying run grades done, not pending
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-08"}
+    assert plans.grade_workout(w, [_run(6000)], frontier="2026-07-08") == "done"
+
+
+def test_today_walk_on_easy_grades_done():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-08"}
+    assert plans.grade_workout(w, [_run(6200, atype="walking")], frontier="2026-07-08") == "done"
+
+
+def test_today_partial_is_held_pending():
+    # a half-done easy run today must NOT count 0.5 prematurely — held pending
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-08"}
+    assert plans.grade_workout(w, [_run(3000)], frontier="2026-07-08") == "pending"
+
+
+def test_today_rest_is_compliant_not_pending():
+    w = {"type": "rest", "date": "2026-07-08"}
+    assert plans.grade_workout(w, [], frontier="2026-07-08") == "compliant"
+
+
+def test_past_partial_before_frontier_grades_partial():
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-05"}
+    assert plans.grade_workout(w, [_run(3000)], frontier="2026-07-08") == "partial"
+
+
+def test_no_frontier_grades_a_done_day():
+    # benign change: with no daily frontier, a day with a qualifying run still
+    # grades done (the old rule held every day pending)
+    w = {"type": "easy", "target_distance_m": 6000.0, "date": "2026-07-05"}
+    assert plans.grade_workout(w, [_run(6000)], frontier=None) == "done"
 
 
 # --- Task 1.4: Riegel + weekly mileage ------------------------------------

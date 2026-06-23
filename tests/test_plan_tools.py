@@ -124,6 +124,8 @@ def test_progress_active_shape(seeded):
     w = body["workouts"][0]
     assert w["verdict"] in _VERDICTS
     assert "week_index" in w and "description" in w
+    # surfacing field threaded through the projection allowlist
+    assert "actual_activity_types" in w and isinstance(w["actual_activity_types"], list)
     assert body["days_to_race"] == 90  # race_date is today + 90
     assert body["predicted_finish_seconds"] is None or isinstance(
         body["predicted_finish_seconds"], int

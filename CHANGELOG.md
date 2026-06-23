@@ -4,6 +4,31 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-23
+
+### Fixed
+- **Training-plan grading: a completed workout today no longer shows
+  `pending`.** `grade_workout` is now outcome-based — it grades first and holds
+  `pending` only when the verdict is negative (`missed`/`partial`) AND the day's
+  data window is still open. A synced workout grades immediately, even today;
+  rest days resolve to `compliant` instead of lingering `pending`. (Holding
+  `partial` too prevents a mid-day half-done run from prematurely counting 0.5
+  in adherence and then self-healing.)
+- **A recovery walk is now reflected in the plan.** Easy/recovery days count
+  walking distance toward the prescription (active recovery is the intent);
+  `long`/`tempo`/`interval`/`race` stay running-only. Per-workout actuals are
+  now foot-based (running + walking) on every day and carry a normalized
+  `actual_activity_types` (e.g. `["walking"]`), so a walk is visible regardless
+  of verdict. The plan tab's Actual-cell coloring is now driven by the backend
+  `verdict` (red only when `missed`) instead of recomputing a pace/distance
+  miss — so a walk-counted `done` day no longer paints red on walking pace.
+  Weekly mileage intentionally stays running-only (it's a run-volume metric,
+  distinct from recovery-day adherence).
+
+Designed and `/quality-gate`-reviewed first
+(`docs/plans/2026-06-23-plan-grading-fixes-design.md`; 4 rounds + look-harder,
+5→0). Frontend coloring verified by screenshot of the plan tab.
+
 ## [0.7.0] - 2026-06-22
 
 ### Added
