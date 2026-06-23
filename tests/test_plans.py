@@ -248,6 +248,46 @@ def test_no_frontier_grades_a_done_day():
     assert plans.grade_workout(w, [_run(6000)], frontier=None) == "done"
 
 
+# --- GradingConfig threading (configurable knobs) -------------------------
+
+def test_default_gradingconfig_reproduces_current_behavior():
+    w = {"type": "easy", "target_distance_m": 6000.0}
+    assert (plans.classify_workout(w, [_run(6000)])
+            == plans.classify_workout(w, [_run(6000)], plans.GradingConfig()) == "done")
+
+
+def test_count_walks_easy_toggle():
+    w = {"type": "easy", "target_distance_m": 6000.0}
+    walk = [_run(6200, atype="walking")]
+    assert plans.classify_workout(w, walk) == "done"  # default True
+    off = plans.GradingConfig(count_walks_easy=False)
+    assert plans.classify_workout(w, walk, off) == "missed"  # walk no longer counts
+
+
+def test_custom_fractions_shift_distance_bands():
+    w = {"type": "easy", "target_distance_m": 10000.0}
+    cfg = plans.GradingConfig(done_fraction=0.5, partial_fraction=0.2)
+    assert plans.classify_workout(w, [_run(6000)], cfg) == "done"     # 0.60 ≥ 0.5
+    assert plans.classify_workout(w, [_run(3000)], cfg) == "partial"  # 0.30 ∈ [0.2,0.5)
+    assert plans.classify_workout(w, [_run(1000)], cfg) == "missed"   # 0.10 < 0.2
+
+
+def test_partial_fraction_threads_into_duration_band():
+    w = {"type": "interval", "target_duration_sec": 3600}
+    run = [_run(4000, duration=1500)]  # 1500/3600 = 0.4167
+    assert plans.classify_workout(w, run) == "done"  # default 0.40: 0.417 ≥ 0.40
+    cfg = plans.GradingConfig(partial_fraction=0.5)
+    assert plans.classify_workout(w, run, cfg) == "partial"  # 0.417 < 0.5
+
+
+def test_count_walks_mileage_toggle():
+    workouts = [_wk(date="2026-07-01", week_index=1, target_distance_m=5000.0)]
+    abd = {"2026-07-01": [_run(4000, atype="walking")]}
+    assert plans.weekly_mileage(workouts, abd)[0]["actual_km"] == 0.0  # running-only default
+    cfg = plans.GradingConfig(count_walks_mileage=True)
+    assert plans.weekly_mileage(workouts, abd, cfg)[0]["actual_km"] == 4.0  # walk included
+
+
 # --- Task 1.4: Riegel + weekly mileage ------------------------------------
 
 def test_riegel_projection():

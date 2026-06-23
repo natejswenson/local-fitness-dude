@@ -4,6 +4,32 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-23
+
+### Added
+- **Grading and projection behavior is now user-configurable** instead of
+  hardcoded to one runner's preferences. Five knobs, each defaulting to the
+  previous hardcoded value (so a fresh clone is unchanged):
+  - `count_walks_easy` (default `true`) — do recovery walks satisfy an
+    easy/recovery prescription;
+  - `count_walks_mileage` (default `false`) — include walking in the weekly
+    mileage rollup;
+  - `grade_done_fraction` / `grade_partial_fraction` (`0.80` / `0.40`) — the
+    done/partial grade bands;
+  - `riegel_lookback_days` (`120`) — lookback window for the projected finish.
+
+  Resolution precedence is **settings DB > env var > default**: set a value live
+  with `uv run fitness config set <key> <value>`, or in `.env`
+  (`LOCAL_FITNESS_COUNT_WALKS_EASY`, etc.; documented in `.env.example`). Values
+  are validated — a blank or unrecognized value falls back to the default, and an
+  inverted fraction pair (`partial > done`) or out-of-range fraction reverts both
+  to defaults so the grade bands can't invert; a nonsense lookback clamps to the
+  default. A new `config.py` accessor resolves the knobs; a `GradingConfig`
+  dataclass threads them into the (still pure) grading functions in `plans.py`,
+  resolved once per request by the brief, the plan tool, and the web plan route —
+  so the brief and the tab grade consistently. Designed and `/quality-gate`-
+  reviewed first (`docs/plans/2026-06-23-configurable-grading-design.md`).
+
 ## [0.8.0] - 2026-06-23
 
 ### Fixed

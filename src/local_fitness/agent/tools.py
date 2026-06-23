@@ -17,7 +17,7 @@ from typing import Any
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from pydantic import ValidationError
 
-from .. import db, notes, plans
+from .. import config, db, notes, plans
 from . import briefs, units
 
 
@@ -1182,13 +1182,8 @@ async def get_training_plan_status(_args: dict) -> dict:
     start = min(dates)
     end = max([today, *dates] + ([frontier] if frontier else []))
     activities_by_date = plans.load_activities_by_date(start, end)
-    return _text(plans.build_plan_status(active, frontier, activities_by_date, today))
-
-
-# Riegel lookback for the projected-finish estimate. Mirrors the web route's
-# _RIEGEL_LOOKBACK_DAYS (web/server.py) — kept local so this module has no
-# dependency on the server.
-_PLAN_RIEGEL_LOOKBACK_DAYS = 120
+    cfg = plans.resolve_grading_config()
+    return _text(plans.build_plan_status(active, frontier, activities_by_date, today, cfg))
 
 
 @tool(
@@ -1214,9 +1209,10 @@ async def get_training_plan_progress(_args: dict) -> dict:
     start = min(dates)
     end = max([today, *dates] + ([frontier] if frontier else []))
     activities_by_date = plans.load_activities_by_date(start, end)
-    cutoff = (date.today() - timedelta(days=_PLAN_RIEGEL_LOOKBACK_DAYS)).isoformat()
+    cutoff = (date.today() - timedelta(days=config.riegel_lookback_days())).isoformat()
     best_effort = plans.best_recent_effort(cutoff)
-    detail = plans.build_plan_detail(active, frontier, activities_by_date, best_effort)
+    cfg = plans.resolve_grading_config()
+    detail = plans.build_plan_detail(active, frontier, activities_by_date, best_effort, cfg)
 
     # days_to_race is produced only by build_plan_status, not build_plan_detail —
     # compute it here. Read via .get (absent key -> None, not KeyError) and parse
