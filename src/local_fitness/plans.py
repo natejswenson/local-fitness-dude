@@ -10,15 +10,59 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from datetime import date as _date
 from pathlib import Path
 
-from . import db
+from . import config, db
 
 # --- constants -------------------------------------------------------------
 
 DONE_FRACTION = 0.80
 PARTIAL_FRACTION = 0.40
+
+
+# --- user-tunable grading config -------------------------------------------
+
+@dataclass(frozen=True)
+class GradingConfig:
+    """Resolved grading knobs threaded into the pure grading functions. Field
+    defaults equal the module constants, so a default ``GradingConfig()``
+    reproduces the historical hardcoded behavior exactly (existing tests pass
+    no ``cfg``)."""
+    done_fraction: float = DONE_FRACTION
+    partial_fraction: float = PARTIAL_FRACTION
+    count_walks_easy: bool = True
+    count_walks_mileage: bool = False
+
+
+def resolve_grading_config(db_path=None) -> GradingConfig:
+    """Read the grading knobs (DB > env > default), validate, and build a
+    ``GradingConfig``. Does I/O (one batched settings read); callers resolve it
+    once per request and thread the result into the pure grading functions.
+
+    The fraction pair must satisfy ``0 <= partial <= done <= 1``; on any
+    violation BOTH revert to their defaults so the grade bands can never invert
+    (a ``partial > done`` would make ``partial`` unreachable)."""
+    settings = db.all_settings(db_path=db_path)
+    done = config._resolve_from(
+        settings, "grade_done_fraction", "LOCAL_FITNESS_GRADE_DONE_FRACTION",
+        DONE_FRACTION, float)
+    partial = config._resolve_from(
+        settings, "grade_partial_fraction", "LOCAL_FITNESS_GRADE_PARTIAL_FRACTION",
+        PARTIAL_FRACTION, float)
+    if not (0 <= partial <= done <= 1):
+        done, partial = DONE_FRACTION, PARTIAL_FRACTION
+    return GradingConfig(
+        done_fraction=done,
+        partial_fraction=partial,
+        count_walks_easy=config._resolve_from(
+            settings, "count_walks_easy", "LOCAL_FITNESS_COUNT_WALKS_EASY",
+            config.DEFAULT_COUNT_WALKS_EASY, config._as_bool),
+        count_walks_mileage=config._resolve_from(
+            settings, "count_walks_mileage", "LOCAL_FITNESS_COUNT_WALKS_MILEAGE",
+            config.DEFAULT_COUNT_WALKS_MILEAGE, config._as_bool),
+    )
 
 GOAL_TYPES = frozenset({"5k", "10k", "half", "full", "custom"})
 WORKOUT_TYPES = frozenset({"easy", "long", "tempo", "interval", "rest", "race", "cross"})
@@ -198,12 +242,16 @@ def validate_plan_input(
 
 # --- Task 1.2: type-aware adherence ---------------------------------------
 
-def classify_workout(workout: dict, day_activities: list[dict]) -> str:
+def classify_workout(
+    workout: dict, day_activities: list[dict], cfg: GradingConfig = GradingConfig()
+) -> str:
     """Grade one prescribed workout against that day's activities.
 
     Returns ``done`` | ``partial`` | ``missed`` | ``compliant`` (rest days).
     Distance is used only for the types where distance is the target; quality
     sessions grade on duration, cross-training on any non-running activity.
+    ``cfg`` carries the user's tunable thresholds and walk-counting toggle; the
+    default reproduces the historical hardcoded behavior.
     """
     wtype = workout.get("type")
 
@@ -212,18 +260,19 @@ def classify_workout(workout: dict, day_activities: list[dict]) -> str:
 
     if wtype in _DISTANCE_TYPES:
         target = workout.get("target_distance_m")
-        # Easy/recovery days count walking too (active recovery is the intent);
-        # long/race require running specificity, so walks don't count there.
+        # Easy/recovery days count walking when enabled (active recovery is the
+        # intent); long/race require running specificity, so walks don't count.
         actual = (
-            _foot_distance(day_activities) if wtype == "easy"
+            _foot_distance(day_activities)
+            if (wtype == "easy" and cfg.count_walks_easy)
             else _running_distance(day_activities)
         )
         if not target:  # null/0 target → "by feel": any qualifying activity counts
             return "done" if actual > 0 else "missed"
         frac = actual / target
-        if frac >= DONE_FRACTION:
+        if frac >= cfg.done_fraction:
             return "done"
-        if frac >= PARTIAL_FRACTION:
+        if frac >= cfg.partial_fraction:
             return "partial"
         return "missed"
 
@@ -232,7 +281,7 @@ def classify_workout(workout: dict, day_activities: list[dict]) -> str:
         if actual <= 0:
             return "missed"
         target = workout.get("target_duration_sec")
-        if target and actual < PARTIAL_FRACTION * target:
+        if target and actual < cfg.partial_fraction * target:
             return "partial"
         return "done"
 
@@ -248,7 +297,10 @@ def classify_workout(workout: dict, day_activities: list[dict]) -> str:
 
 # --- Task 1.3: data-frontier grading --------------------------------------
 
-def grade_workout(workout: dict, day_activities: list[dict], frontier: str | None) -> str:
+def grade_workout(
+    workout: dict, day_activities: list[dict], frontier: str | None,
+    cfg: GradingConfig = GradingConfig(),
+) -> str:
     """Grade a prescribed workout, holding not-yet-credited days as ``pending``.
 
     Grade first, then keep ``pending`` only when the verdict is a *negative* one
@@ -261,7 +313,7 @@ def grade_workout(workout: dict, day_activities: list[dict], frontier: str | Non
     later in the day. ISO ``YYYY-MM-DD`` strings compare lexicographically in date
     order, so plain string comparison is safe.
     """
-    verdict = classify_workout(workout, day_activities)
+    verdict = classify_workout(workout, day_activities, cfg)
     if verdict in ("missed", "partial") and (
         frontier is None or workout.get("date", "") >= frontier
     ):
@@ -282,8 +334,15 @@ def riegel_predict(
     return best_time_s * (target_distance_m / best_distance_m) ** RIEGEL_EXP
 
 
-def weekly_mileage(workouts: list[dict], activities_by_date: dict[str, list[dict]]) -> list[dict]:
-    """Planned vs. actual km per ``week_index`` (actual counts each date once)."""
+def weekly_mileage(
+    workouts: list[dict], activities_by_date: dict[str, list[dict]],
+    cfg: GradingConfig = GradingConfig(),
+) -> list[dict]:
+    """Planned vs. actual km per ``week_index`` (actual counts each date once).
+
+    Actual mileage is running-only by default (it is a run-volume metric); when
+    ``cfg.count_walks_mileage`` is set it includes walking too."""
+    dist_fn = _foot_distance if cfg.count_walks_mileage else _running_distance
     planned: dict[int, float] = {}
     week_dates: dict[int, set[str]] = {}
     for w in workouts:
@@ -294,7 +353,7 @@ def weekly_mileage(workouts: list[dict], activities_by_date: dict[str, list[dict
     rows = []
     for wk in sorted(planned):
         actual_m = sum(
-            _running_distance(activities_by_date.get(d, []))
+            dist_fn(activities_by_date.get(d, []))
             for d in week_dates.get(wk, set())
         )
         rows.append({
@@ -597,15 +656,20 @@ def build_plan_detail(
     frontier: str | None,
     activities_by_date: dict[str, list[dict]],
     best_effort: dict | None = None,
+    cfg: GradingConfig = GradingConfig(),
 ) -> dict:
-    """Assemble the full PlanDetail the tab renders (workouts graded, rollups)."""
+    """Assemble the full PlanDetail the tab renders (workouts graded, rollups).
+
+    Surfaced actuals (``actual_distance_m``/``_pace``/``_activity_types``) stay
+    foot-based regardless of ``cfg`` — they show what was actually done; the
+    ``verdict`` reflects whether it counted per ``cfg``."""
     graded = []
     for w in plan["workouts"]:
         day = activities_by_date.get(w["date"], [])
         actual_dist, actual_pace, actual_types = _workout_actuals(day)
         graded.append({
             **w,
-            "verdict": grade_workout(w, day, frontier),
+            "verdict": grade_workout(w, day, frontier, cfg),
             "actual_distance_m": actual_dist,
             "actual_pace_sec_per_km": actual_pace,
             "actual_activity_types": actual_types,
@@ -619,7 +683,7 @@ def build_plan_detail(
     return {
         **{k: v for k, v in plan.items() if k != "workouts"},
         "workouts": graded,
-        "weekly_mileage": weekly_mileage(plan["workouts"], activities_by_date),
+        "weekly_mileage": weekly_mileage(plan["workouts"], activities_by_date, cfg),
         "predicted_finish_seconds": predicted,
         "adherence_pct": _adherence_pct(graded),
     }
@@ -645,13 +709,14 @@ def build_plan_status(
     frontier: str | None,
     activities_by_date: dict[str, list[dict]],
     today: str,
+    cfg: GradingConfig = GradingConfig(),
 ) -> dict:
     """Structured status for the brief. Returns {'active': False} when no plan."""
     if plan is None:
         return {"active": False}
 
     graded = [
-        {**w, "verdict": grade_workout(w, activities_by_date.get(w["date"], []), frontier)}
+        {**w, "verdict": grade_workout(w, activities_by_date.get(w["date"], []), frontier, cfg)}
         for w in plan["workouts"]
     ]
     today_w = next((w for w in graded if w["date"] == today), None)

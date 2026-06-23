@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import db, notes as user_notes_mod, plans as plans_mod
+from .. import config as config_mod, db, notes as user_notes_mod, plans as plans_mod
 from ..agent import briefs
 from ..agent import prompts
 from ..ingest import baselines as baselines_mod
@@ -386,9 +386,6 @@ async def api_training_load(days: int = Query(180, ge=7, le=2000)) -> dict:
 # activation/soft-delete actions — the agent has no tool for either. None of
 # these call Claude, so none are rate-limited.
 
-_RIEGEL_LOOKBACK_DAYS = 120
-
-
 def _assemble_plan_detail(plan: dict | None) -> dict | None:
     if plan is None:
         return None
@@ -397,9 +394,10 @@ def _assemble_plan_detail(plan: dict | None) -> dict | None:
     dates = [w["date"] for w in plan["workouts"]] or [today]
     start, end = min(dates), max([today, *dates])
     activities_by_date = plans_mod.load_activities_by_date(start, end)
-    cutoff = (date.today() - timedelta(days=_RIEGEL_LOOKBACK_DAYS)).isoformat()
+    cutoff = (date.today() - timedelta(days=config_mod.riegel_lookback_days())).isoformat()
     best = plans_mod.best_recent_effort(cutoff)
-    detail = plans_mod.build_plan_detail(plan, frontier, activities_by_date, best)
+    cfg = plans_mod.resolve_grading_config()
+    detail = plans_mod.build_plan_detail(plan, frontier, activities_by_date, best, cfg)
     with db.connect() as conn:
         detail["ctl_series"] = [
             dict(r) for r in conn.execute(
