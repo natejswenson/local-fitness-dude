@@ -189,6 +189,36 @@ def test_build_plan_detail_attaches_actuals():
     assert w1["actual_pace_sec_per_km"] is None
 
 
+def test_build_plan_detail_surfaces_walk_on_easy_day():
+    """A recovery walk satisfies an easy day (done) and is surfaced as a walk."""
+    plan = {
+        "plan_id": 1, "goal_type": "half", "race_date": "2026-09-14",
+        "workouts": [_wk(date="2026-07-01", type="easy", target_distance_m=4828.0)],
+    }
+    activities_by_date = {"2026-07-01": [_run(6213, duration=3959, atype="walking")]}
+    detail = plans.build_plan_detail(plan, frontier="2026-07-08",
+                                     activities_by_date=activities_by_date)
+    w0 = detail["workouts"][0]
+    assert w0["verdict"] == "done"
+    assert w0["actual_distance_m"] == 6213
+    assert w0["actual_activity_types"] == ["walking"]
+
+
+def test_build_plan_detail_surfaces_walk_on_long_day_still_missed():
+    """A long day walked (not run) is missed, but the walk is still surfaced."""
+    plan = {
+        "plan_id": 1, "goal_type": "half", "race_date": "2026-09-14",
+        "workouts": [_wk(date="2026-07-01", type="long", target_distance_m=12000.0)],
+    }
+    activities_by_date = {"2026-07-01": [_run(6213, duration=3959, atype="walking")]}
+    detail = plans.build_plan_detail(plan, frontier="2026-07-08",
+                                     activities_by_date=activities_by_date)
+    w0 = detail["workouts"][0]
+    assert w0["verdict"] == "missed"            # walks don't satisfy a long run
+    assert w0["actual_distance_m"] == 6213       # but the walk is reflected
+    assert w0["actual_activity_types"] == ["walking"]
+
+
 def test_build_plan_status_inactive():
     assert plans.build_plan_status(None, frontier="2026-07-08",
                                    activities_by_date={}, today="2026-07-05") == {"active": False}
