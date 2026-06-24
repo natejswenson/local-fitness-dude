@@ -27,19 +27,40 @@ with YAML frontmatter (the dials) and a fleshed prose body (the voice).
 | `neutral` | 5 | 5 | 5 | 0.85 | 0.95 |
 | `hardass` | 9 | 1 | 10 | 1.00 | 1.05 |
 
-**Dial semantics** (injected into the brief prompt; the LLM calibrates against
-them — it sees the day's data via its tools):
-- `harshness` / `warmth` / `push` — 0–10 calibration dials for the prose.
-- `roast_threshold` — fraction of goal; when the day's attainment is **below**
-  this, the tone hardens. `supportive` 0.00 = never roasts; `hardass` 1.00 =
-  anything short of 100% gets pushed.
-- `praise_threshold` — fraction of goal above which the brief celebrates.
-  `hardass` 1.05 = only praises overachievement; `supportive` 0.60 = praises
-  effort readily.
+**Dial semantics.** Two tiers, deliberately separated by how falsifiable they
+are — this is the honest core of the design (SIG-2):
+
+- **`harshness` / `warmth` / `push` (0–10) — PROSE CALIBRATION, not falsifiable.**
+  These are interpolated into the profile block as directional, LLM-judged
+  calibration hints for the prose ("Coaching dials: harshness 9/10 …"). They are
+  *not* finely controllable: harshness 7 vs 9 is a nudge the model interprets,
+  not a precisely measurable behavior. We keep them because the user asked for
+  numeric characteristics, but we frame them honestly as calibration. The
+  deterministic, testable behavior lives in the thresholds below — not here.
+- **`roast_threshold` — DETERMINISTIC gate (goal-based mandates only).** Fraction
+  of goal. For mandates where a concrete number exists — the **steps** mandate
+  (`briefing.py:151` reads a real `daily_step_goal`) and the **plan-adherence**
+  mandate (an `adherence_pct` exists) — this threshold *deterministically gates
+  which harsh-tone imperative blocks are assembled into the `briefing_prompt`
+  string* (see "Threading"). When `roast_threshold <= 0.0` (e.g. `supportive`),
+  the "Be sharp. Be harsh. Override the usual voice" imperative blocks are
+  **omitted from the prompt entirely** — not "hoped suppressed by the LLM". When
+  high (`hardass` 1.00), they're included and amplified. `supportive` 0.00 = never
+  roasts; `hardass` 1.00 = anything short of 100% gets the harsh block.
+- **`praise_threshold` — celebration gate (goal-based mandates only).** Fraction
+  of goal above which the brief celebrates. `hardass` 1.05 = only praises
+  overachievement; `supportive` 0.60 = praises effort readily. `praise_threshold
+  > 1.0` (hardass 1.05) is only meaningful for **goal-based** domains (steps,
+  plan adherence) where >100% attainment is a real thing — it does **NOT** apply
+  to RHR or sleep, which have no notion of "overachievement". Threshold semantics
+  are scoped to goal-based mandates only.
 
 **`adaptive`** reproduces today's behavior; its dials describe the existing
-blend, and its `.md` body is the **verbatim** current persona text (see "The
-load-bearing constraint").
+blend, and its `.md` persona **body** is the current persona prose verbatim
+(lines `42-73`). Note the overall rendered `system_prompt(ADAPTIVE)` legitimately
+*gains* the new "Coaching dials" line (uniform across all profiles), so it is
+**SCORER-EQUIVALENT, not byte-identical** to today — see "The load-bearing
+constraint (A/B gate)".
 
 ## The `.md` profile structure (fully fleshed)
 
@@ -89,7 +110,17 @@ Bodies are prose/bullets with verbatim example lines, like the voice profile.
   - `load_profile(name) -> CoachProfile` — reads
     `coach_profiles/<name>.md` (resolved `Path(__file__).resolve().parent /
     "coach_profiles"`), parses YAML frontmatter (dials) + body (persona). Unknown
-    name → load `adaptive`.
+    name → load `adaptive`. **Import-time-safe fallbacks (required):**
+    - Missing file, OR unparseable/empty frontmatter, OR empty body → return an
+      **in-code hardcoded `CoachProfile` constant** (`_FALLBACK_ADAPTIVE`, the
+      adaptive dials + persona baked into `coach.py`). Never raise.
+    - A single missing dial in otherwise-valid frontmatter → that dial's
+      hardcoded default (the adaptive value), other dials honored.
+    This matters because `prompts.py:554-555` builds `SYSTEM_PROMPT` /
+    `BRIEFING_PROMPT` at **module import** with `profile=ADAPTIVE`, which loads
+    `adaptive.md` from disk at import time. A broken/missing `adaptive.md` would
+    otherwise brick every import of `prompts` (and `score_prompt.py`, and the web
+    server). The in-code fallback guarantees import always succeeds.
   - `PROFILE_NAMES` frozenset = the whitelist (`adaptive`, `supportive`,
     `neutral`, `hardass`) — derived from the shipped files.
   - `resolve_coach_profile(db_path=None) -> CoachProfile` — pick the profile name
@@ -104,38 +135,85 @@ Bodies are prose/bullets with verbatim example lines, like the voice profile.
     frontmatter value: `coach_harshness`, `coach_warmth`, `coach_push` (int,
     clamp 0–10), `coach_roast_threshold`, `coach_praise_threshold` (float, clamp
     0.0–1.20).
+  - **Per-dial overrides are GLOBAL, not per-profile (documented footgun).** They
+    are flat settings key/value pairs, so `coach_harshness=7` overrides the
+    harshness of **whichever** profile is currently selected — it is not scoped to
+    one profile. Switching `coach_profile` does *not* clear a previously-set dial
+    override. Documented behavior: "`coach_harshness=7` overrides every profile's
+    native harshness; unset it (`fitness config unset coach_harshness`) when
+    switching profiles if you want the new profile's native value." We do **not**
+    add per-profile override scoping (YAGNI) — just document the global semantics.
 - **`src/local_fitness/agent/prompts.py`**:
-  - `system_prompt(user_name, profile: CoachProfile = ADAPTIVE)` — the persona
-    block (`prompts.py:42-73`) becomes `{profile.persona}`, and a one-line
-    "Coaching dials" interpolation (`harshness N/10 · warmth N/10 · push N/10 ·
-    harden below {roast_threshold} of goal · celebrate above {praise_threshold}`)
-    is appended.
+  - `system_prompt(user_name, profile: CoachProfile = ADAPTIVE)` — only the
+    **tone/voice** bullets of the persona block become `{profile.persona}`: the
+    "Frame depends on what the data shows" / roast-when-slipping / "keep the edge"
+    / "never paper a bad day" rules. The **universal grounding bullets stay FIXED
+    across all profiles, outside `{profile.persona}`** — specifically the CTL/ATL/
+    TSB → fitness/fatigue/freshness jargon translation (`prompts.py:50-53`) and
+    "pair every number with its meaning". This is load-bearing: the jargon
+    translation is what `score_prompt.py:86-89` checks, and a non-adaptive profile
+    must NOT be able to drop it (the scorer only renders adaptive, so an omission
+    in a supportive `.md` would silently strip the grounding contract from
+    supportive briefs). Then a one-line "Coaching dials" interpolation
+    (`harshness {h}/10 · warmth {w}/10 · push {p}/10 · harden below
+    {roast_threshold:.2f} of goal · celebrate above {praise_threshold:.2f}`, fixed
+    2-decimal float format for stable rendering) is appended for all profiles.
   - `briefing_prompt(..., profile: CoachProfile = ADAPTIVE)` — the per-mandate
     **tone→enum mapping stays factual** (which of positive|caution|critical|
-    neutral by data state — needed for the schema + card color), but the
-    scattered **harshness imperatives** ("Be harsh", "Override the soft voice",
-    "roast") consolidate into a single injected profile-calibration block so they
-    are governed by the selected profile, not hardcoded.
+    neutral by data state — needed for the schema + card color). The scattered
+    prose **harshness imperatives** consolidate into the injected profile block.
+    But the load-bearing change is **deterministic prompt assembly** for the
+    goal-based mandates: the harsh-tone imperative blocks in the **steps mandate**
+    (`prompts.py:351-373` — "Yesterday MISSED goal → tone: critical. Be sharp. Be
+    harsh. Override the usual …") and the **plan-adherence mandate**
+    (`prompts.py:315-318` — the "roast when slipping" adherence open) are
+    *conditionally included in the returned string* based on
+    `profile.roast_threshold`. When `roast_threshold <= 0.0`, those blocks are
+    **not concatenated into `briefing_prompt`'s return value at all**; when high,
+    they're included (and the dial line amplifies them). This is plain string
+    assembly — falsifiable by a unit test (see "Requires tests"), not LLM hope.
   - `ADAPTIVE` is a module-level `CoachProfile` loaded from `adaptive.md`, used as
     the default arg so back-compat callers (tests, the `BRIEFING_PROMPT` const)
     get today's behavior.
 - **`src/local_fitness/agent/briefing.py`** + **`web/mcp_server.py`**: resolve
-  the profile once (`coach.resolve_coach_profile()`) and pass it into both
-  `system_prompt` and `briefing_prompt` (mirrors the existing `daily_step_goal`
-  read at `briefing.py:149-153`).
+  the profile via **`coach.resolve_coach_profile()`** (which uses
+  `config.coach_profile()`'s DB > env > default resolver **plus** the per-dial
+  overrides) and pass the resulting `CoachProfile` into both `system_prompt` and
+  `briefing_prompt`, alongside the existing `user_name` / `daily_step_goal` reads
+  at `briefing.py:149-153`. Do NOT copy the raw `db.get_setting` + inline `int()`
+  pattern those lines use for `daily_step_goal` — that path has no env layer; the
+  profile must go through the config resolver so `LOCAL_FITNESS_COACH_PROFILE`
+  works.
 
 ## The load-bearing constraint (A/B gate)
 
-`adaptive.md`'s body is the **verbatim** current persona text (lines `42-73`),
-so **`system_prompt(ADAPTIVE)` renders byte-for-byte identical to today**. This
-keeps `score_prompt.py` check #4 (`"roast"` present in the system prompt) green
-without change, and a fresh clone / unset config gets exactly today's brief.
+The adaptive default must keep today's brief behavior. The gate is
+**SCORER-EQUIVALENT + A/B-CONSISTENT**, *not* byte-equality — the actual
+`score_prompt.py` gate is whitespace-insensitive substring/membership checks, so
+byte-identity was never required (and isn't achievable anyway, since every
+profile — adaptive included — gains the uniform "Coaching dials" line).
 
-The `briefing_prompt` refactor moves harshness imperatives into the profile
-block but **keeps all four `Tone` words** (`positive|caution|critical|neutral`)
-and the schema-FIXED / one-key language intact, so `score_prompt.py` checks
-#7–#10 still pass. The refactor is semantically equivalent for the adaptive
-default — confirmed by the cross-model A/B (below), not assumed.
+Concretely, the adaptive (default) rendering must satisfy:
+
+- **`score_prompt.py` passes unchanged.** It scores only the *default* rendering
+  (`system_prompt("TestRunner")` and `briefing_prompt()` with default args).
+  Adaptive's persona body is today's prose verbatim, so:
+  - check at `score_prompt.py:90-92` — `"roast" in sys_low` — stays green: the
+    literal `"roast"` substring is present in `system_prompt(ADAPTIVE)`.
+  - checks at `score_prompt.py:72-74` — all four `Tone` words
+    (`positive|caution|critical|neutral`) appear in `briefing_prompt` — stay green:
+    the refactor keeps all four tone words and the schema-FIXED / one-key language
+    intact.
+- **A/B-consistent.** The adaptive brief is validated equivalent to today's by the
+  cross-model A/B reporting `consistent: true` (structure preserved) — *not* by
+  byte-equality.
+
+Resolving the dials-line contradiction explicitly: the "Coaching dials" line is
+part of the injected profile block for **ALL** profiles **including adaptive**
+(uniform). Adaptive's *persona body* is the current persona prose verbatim, but
+the *overall* prompt legitimately gains the dials line — that's fine, because the
+scorer is substring/membership-based, not byte-based. Adaptive is validated
+scorer-equivalent, not byte-equal.
 
 ## Profile vs. user-notes precedence
 
@@ -162,14 +240,22 @@ now stated rather than left to chance.)
 
 Checkable by inspection:
 - All four `coach_profiles/*.md` exist and parse (frontmatter dials + body).
-- `system_prompt(ADAPTIVE)` is byte-identical to the pre-change system prompt
-  (golden test pins it — protects the A/B gate).
-- `briefing_prompt(profile)` contains all four `Tone` words for **every** profile
-  (so the schema/scorer hold regardless of profile).
+- **A/B-gate invariant (replaces the old golden byte-test):**
+  (a) `score_prompt.py` passes on the adaptive (default) rendering **unchanged**;
+  (b) the `"roast"` substring is present in `system_prompt(ADAPTIVE)`;
+  (c) all four `Tone` words are present in `briefing_prompt(profile)` for **every**
+      profile;
+  (d) the cross-model A/B reports `consistent: true` for adaptive.
+  (Adaptive is validated **scorer-equivalent**, not byte-equal.)
+- **Import never bricks:** `import local_fitness.agent.prompts` succeeds even if
+  `adaptive.md` is missing or malformed — `coach.load_profile` falls back to the
+  in-code `CoachProfile` constant. (A missing/unparseable `adaptive.md` degrades
+  gracefully; it never raises at import.)
 - Unknown `coach_profile` resolves to `adaptive` (fail-safe); the prompts never
   receive an unloadable profile.
 - Dial overrides clamp to range (0–10 ints; 0.0–1.20 floats); out-of-range or
-  unparseable → the profile's frontmatter value.
+  unparseable → the profile's frontmatter value. A single missing dial in
+  frontmatter → that dial's hardcoded default.
 - Profiles are tracked code (under `agent/coach_profiles/`), not in the
   gitignored `data/` — they ship with the package.
 
@@ -177,23 +263,38 @@ Requires tests:
 - Every shipped profile loads with dials in range and a non-empty persona.
 - `resolve_coach_profile` returns the right profile per `coach_profile` setting;
   a per-dial override changes only that dial; bad override clamps/falls back.
-- `system_prompt(ADAPTIVE)` == captured legacy string (golden).
+- **Deterministic threshold gating (addresses the unfalsifiability — SIG-2):**
+  the `supportive`-rendered `briefing_prompt` does **NOT** contain the harsh steps
+  imperative ("Be sharp. Be harsh. Override the usual …") nor the harsh
+  plan-adherence open; the `hardass`-rendered `briefing_prompt` **DOES** contain
+  them. Pure string assertions on the returned prompt — no LLM call.
+- Import-safety: with `adaptive.md` temporarily removed/corrupted, `import
+  local_fitness.agent.prompts` still succeeds (in-code fallback) and `"roast"` is
+  still present in `system_prompt(ADAPTIVE)`.
 - `system_prompt(hardass)` carries accountability language; `system_prompt(supportive)`
   does NOT roast (no harshness imperatives).
 - `briefing_prompt` keeps the four tone words under each profile.
-- `score_prompt.py`: default rendering passes all checks (unchanged); the
-  extended per-profile checks pass.
+- `score_prompt.py`: the default (adaptive) rendering passes all checks
+  **unchanged** (no scorer edits required to ship).
+
+Optional hardening (NOT gate-blocking — see "Testing strategy"):
+- Extend `score_prompt.py` with per-profile internal-consistency checks. This is
+  a nice-to-have, not required for the gate.
 
 ## Testing strategy
 
-- `uv run pytest -x` — new `test_coach.py` (load/resolve/override/clamp), a
-  golden test pinning `system_prompt(ADAPTIVE)`, and profile-rendering assertions
-  in `test_prompts.py`; existing prompt tests stay green.
+- `uv run pytest -x` — new `test_coach.py` (load/resolve/override/clamp, import
+  fallback), deterministic threshold-gating assertions and profile-rendering
+  assertions in `test_prompts.py`; existing prompt tests stay green. (No golden
+  byte-test — the gate is scorer-equivalence + A/B-consistency, not byte-equality.)
 - **Prompt A/B gate (mandatory — this is an agent-prompt change).**
-  1. `scripts/score_prompt.py` must stay GREEN. Extend it to also score each
-     non-default profile's internal consistency (hardass has accountability
-     language; every profile keeps the four tone words). The default (adaptive)
-     rendering passes unchanged.
+  1. `scripts/score_prompt.py` must stay GREEN on the default (adaptive)
+     rendering **with zero scorer edits** — it scores only the default rendering
+     (`system_prompt("TestRunner")`, `briefing_prompt()` with default args), and
+     adaptive renders today's text (plus the harmless dials line, which the
+     substring checks tolerate). Extending the scorer with per-profile
+     internal-consistency checks is **OPTIONAL HARDENING, explicitly not
+     gate-blocking** — a nice-to-have, not a ship requirement.
   2. `scripts/ab_brief.py --run` for the **adaptive** profile must report
      `consistent: true` (structure: 3–5 takeaways, steps takeaway, plan-fold).
      The `ab_brief._generate` harness is flaky (memory:
@@ -212,4 +313,26 @@ Requires tests:
 
 ## Quality-gate provenance
 
-(Filled in after the `/quality-gate` pass.)
+Reviewed via `/quality-gate` (artifact type: design) on `general-purpose` agents
+(the `crucible-*` agent types / receipt-cairn infra are not installed here, so the
+Opus recall guarantee was not enforced; findings were still code-grounded). Two
+red-team rounds + a tightened look-harder pass. Terminal verdict **PASS
+(clean-pass)**: 0 Fatal / 0 Significant on a fresh round, confirmed by look-harder
+(which also verified consumer-completeness — the profile is threaded into both
+`briefing.py` and `mcp_server.py`, the only two callers). Score trajectory 4 → 0.
+
+Round 1 materially reshaped the design. It caught that the **"byte-identical
+adaptive" claim was self-contradictory** (the appended dials line means it can't
+be byte-equal) and fragile — reframed to **scorer-equivalent + A/B-consistent**
+(the scorer only needs `"roast"` + the four tone words, both whitespace-
+insensitive). More importantly it caught that the **numeric dials were
+unfalsifiable** as pure LLM-calibration — fixed by giving the `roast`/`praise`
+thresholds **deterministic teeth** (they conditionally include/omit the harsh
+imperative blocks in the assembled `briefing_prompt` for goal-based mandates,
+which is unit-testable) while framing the 0–10 dials honestly as prose
+calibration. It also fixed the "mirror `daily_step_goal`" instruction (that path
+bypasses the config resolver), the over-claimed scorer extension (optional, not
+gate-required), and the import-time disk-read fragility (in-code fallback so a
+missing `adaptive.md` never bricks import). The look-harder pass added the
+universal-grounding-stays-fixed refinement (the jargon-translation block must not
+be omittable per-profile).
