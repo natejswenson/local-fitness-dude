@@ -55,8 +55,14 @@ def mcp_stdio():
     /mcp/ behind the bearer token (see web/server.py)."""
     import asyncio
 
+    from . import db
     from .web import mcp_server
 
+    # Parity with the HTTP path (which inits in the FastAPI lifespan): ensure the
+    # schema exists so the live coach-persona resolution finds the settings table
+    # on a fresh clone. (The persona wrap is fail-open regardless, but without
+    # this stdio would degrade to no-persona until the DB is initialized.)
+    db.init_schema()
     asyncio.run(mcp_server.run_stdio())
 
 

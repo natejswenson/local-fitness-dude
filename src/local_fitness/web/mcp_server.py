@@ -332,14 +332,52 @@ def _register_prompts_and_resources(instance: Server) -> None:
         return [ReadResourceContents(content=text, mime_type="text/markdown")]
 
 
+def _install_coach_persona(instance: Server) -> None:
+    """Advertise the resolved coach persona as the server's MCP ``instructions``,
+    resolved LIVE at each client connect — so tool-driven Claude Code fitness chat
+    adopts the active ``coach_profile`` (not just the ``/coach`` slash command).
+
+    We wrap ``create_initialization_options`` rather than setting ``instructions``
+    eagerly: ``build_server`` runs at import (``web/server.py`` builds the session
+    manager at module top-level), BEFORE ``db.init_schema()`` in the FastAPI
+    lifespan — so an eager ``resolve_coach_profile()`` (a ``settings``-table read)
+    would crash a fresh clone with ``no such table: settings``. Deferring the read
+    to connect-time runs it after init and reflects the live profile.
+
+    Fail-open: any resolution error advertises no persona (``instructions=None``)
+    rather than breaking the MCP handshake — this is also what keeps the stdio
+    path (``mcp-stdio``, which may run before init on a fresh clone) safe.
+
+    RACE-FREE — do not break: ``create_initialization_options`` is synchronous, so
+    the set→``_orig()`` snapshot-by-value happens in one frame and concurrent
+    stateless-HTTP requests cannot interleave. NEVER introduce an ``await`` between
+    setting ``instructions`` and the ``_orig()`` call (e.g. an async DB resolve);
+    that would open a real TOCTOU race across concurrent connections.
+    """
+    _orig = instance.create_initialization_options
+
+    def _with_coach_persona(*args, **kwargs):
+        try:
+            instance.instructions = prompts.system_prompt(
+                _user_name(), coach.resolve_coach_profile()
+            )
+        except Exception:
+            instance.instructions = None  # fail-open: never break the handshake
+        return _orig(*args, **kwargs)
+
+    instance.create_initialization_options = _with_coach_persona
+
+
 def build_server() -> Server:
     """The reused, fully-wired low-level MCP Server (one source of truth).
 
     The SDK's ``create_sdk_mcp_server`` only wires the TOOL handlers; we register
     the coach PROMPT and the schema/brief RESOURCES on the same instance here so
-    both transports (stdio + streamable-HTTP) advertise all three primitives."""
+    both transports (stdio + streamable-HTTP) advertise all three primitives, and
+    install the live coach-persona ``instructions`` wrap."""
     instance = agent_tools.make_server()["instance"]
     _register_prompts_and_resources(instance)
+    _install_coach_persona(instance)
     return instance
 
 
