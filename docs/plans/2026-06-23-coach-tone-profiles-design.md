@@ -277,30 +277,68 @@ Requires tests:
 - `score_prompt.py`: the default (adaptive) rendering passes all checks
   **unchanged** (no scorer edits required to ship).
 
-Optional hardening (NOT gate-blocking — see "Testing strategy"):
-- Extend `score_prompt.py` with per-profile internal-consistency checks. This is
-  a nice-to-have, not required for the gate.
+## Testing strategy — every profile A/B'd + quality-tested vs. expected outcomes
 
-## Testing strategy
+This feature ships **opinionated tonal behavior**, so per the user's standard
+("build an automated scorer; don't eyeball") **every profile is validated against
+expected outcomes at two layers** — a deterministic prompt-level scorer (CI-gating)
+and a generative output-level A/B (on-demand, cost-capped). Neither is eyeballed.
+
+### Layer 1 — per-profile quality scorer (deterministic, CI-gating) — `scripts/score_profiles.py` (new)
+
+Renders `system_prompt(p)` + `briefing_prompt(p)` for **all four profiles** and
+asserts the **expected per-profile outcomes** as pure string/structural checks
+(no LLM). All-or-nothing, exit non-zero on any miss — wired into pytest and CI:
+
+| Check (every profile) | Expectation |
+|---|---|
+| four `Tone` words present | schema validity holds for every profile |
+| CTL/ATL/TSB → fitness/fatigue/freshness | grounding contract retained (the fixed block) |
+| schema-FIXED / "exactly one key" / `takeaways` | output schema intact |
+
+| Profile | Expected outcome (lexical/structural) |
+|---|---|
+| `adaptive` | contains `"roast"`; harsh steps + plan blocks PRESENT (== today) |
+| `supportive` | NO harsh imperatives (`rip`, `no excuse`, `stop coasting`, `slacking`, `this is on you`); harsh steps + plan blocks OMITTED; encouraging markers present |
+| `neutral` | NO harsh imperatives AND no effusive-praise markers; factual framing |
+| `hardass` | accountability/harsh language present; harsh steps + plan blocks INCLUDED |
+
+This is the backbone "quality test all profiles vs expected outcomes" — fast,
+deterministic, falsifiable (it fails if a profile's prose drifts from its intent
+or a deterministic gate breaks).
+
+### Layer 2 — per-profile generative A/B (output vs. expected tone) — `scripts/ab_brief.py --profile`
+
+Extend `ab_brief.py` with a `--profile <name>` flag (default `adaptive`) that
+generates the brief under that profile, plus a per-profile **expected-tone**
+assertion over the **structured output** (not eyeballed):
+
+- **Deterministic signal (cheap, on the JSON):** the `tone` enum distribution per
+  profile on a representative slipping-day fixture — `supportive` emits **0
+  `critical`** takeaways; `hardass` emits **≥1 `critical`/`caution`**; `neutral`
+  in between. Structure invariants (3–5 takeaways, steps takeaway, plan-fold) must
+  hold for **every** profile — so no profile produces a malformed brief.
+- **Robust signal (LLM-judge):** a small judge rates each generated brief on a
+  supportive↔hardass axis and asserts the ranking is **monotonic**
+  (`supportive < neutral < adaptive ≤ hardass`). This is the real "expected
+  outcome" validation, automated via a judge rather than human reading.
+
+Generative runs cost subscription tokens and the `_generate` harness is flaky
+(memory: feedback-ab-brief-harness-flaky), so Layer 2 is **on-demand + cost-capped**
+(dry-run estimate first, hard `MAX_GENERATIONS` cap), not CI-gating. The adaptive
+A/B additionally uses **differential testing** (stash the change; confirm the
+baseline behaves identically) per the flaky-harness workaround.
+
+### Other
 
 - `uv run pytest -x` — new `test_coach.py` (load/resolve/override/clamp, import
-  fallback), deterministic threshold-gating assertions and profile-rendering
-  assertions in `test_prompts.py`; existing prompt tests stay green. (No golden
-  byte-test — the gate is scorer-equivalence + A/B-consistency, not byte-equality.)
-- **Prompt A/B gate (mandatory — this is an agent-prompt change).**
-  1. `scripts/score_prompt.py` must stay GREEN on the default (adaptive)
-     rendering **with zero scorer edits** — it scores only the default rendering
-     (`system_prompt("TestRunner")`, `briefing_prompt()` with default args), and
-     adaptive renders today's text (plus the harmless dials line, which the
-     substring checks tolerate). Extending the scorer with per-profile
-     internal-consistency checks is **OPTIONAL HARDENING, explicitly not
-     gate-blocking** — a nice-to-have, not a ship requirement.
-  2. `scripts/ab_brief.py --run` for the **adaptive** profile must report
-     `consistent: true` (structure: 3–5 takeaways, steps takeaway, plan-fold).
-     The `ab_brief._generate` harness is flaky (memory:
-     feedback-ab-brief-harness-flaky); verify by **differential testing** — stash
-     the change, confirm the baseline fails/passes identically — rather than
-     trusting a single green run.
+  fallback) + the Layer-1 per-profile assertions in `test_prompts.py` /
+  `test_score_profiles.py`; existing prompt tests stay green. (No golden byte-test
+  — the gate is scorer-equivalence + A/B-consistency, not byte-equality.)
+- `scripts/score_prompt.py` stays GREEN on the default (adaptive) rendering with
+  **zero edits** (it scores only the default args; adaptive renders today's text
+  plus the harmless dials line). The new `score_profiles.py` is the per-profile
+  layer that score_prompt.py does not cover.
 - Rebuild the container so the deployed brief honors the selected profile.
 
 ## Obligations (repo rules)
