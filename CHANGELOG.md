@@ -4,6 +4,28 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-06-23
+
+### Added
+- **The coach profile now carries into tool-driven Claude Code chat**, not just
+  the `/mcp__fitness__coach` slash command. The fitness MCP server advertises the
+  resolved coach persona as its top-level `instructions`, so when Claude Code
+  answers a fitness question by calling the MCP tools (rather than the slash
+  command), the reply adopts your selected `coach_profile`'s voice.
+
+  Resolution is **live, per client connect** (a `create_initialization_options`
+  wrap): a `fitness config set coach_profile …` takes effect on the next
+  connect — no server restart, consistent with the slash-command prompts. The
+  wrap is **import-safe** (it does no DB I/O at server-build time, which on the
+  HTTP path runs before the schema is initialized) and **fail-open** (a
+  resolution error advertises no persona rather than breaking the MCP handshake).
+  `fitness mcp-stdio` now initializes the schema for parity. Reuses the existing
+  `system_prompt` unchanged (no prompt edit; `score_prompt.py` untouched).
+
+  Designed and `/quality-gate`-reviewed first
+  (`docs/plans/2026-06-23-mcp-server-coach-persona-design.md`); the gate caught a
+  clone-breaking import-time crash in the first approach.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added

@@ -228,3 +228,50 @@ def test_spa_catchall_does_not_shadow_mcp():
     catchall_idx = next(i for i, r in enumerate(routes)
                         if isinstance(r, Route) and "{full_path" in r.path)
     assert mcp_idx < catchall_idx, "MCP mount must precede the SPA catch-all"
+
+
+# --- coach persona advertised as live MCP instructions --------------------
+
+def test_build_server_import_safe_on_uninitialized_db(monkeypatch, tmp_path):
+    # build_server runs at IMPORT (before init_schema); the persona wrap must
+    # not read the settings table at build. Point at an uninitialized DB: build
+    # + the connect-time resolution must not crash — fail-open to no persona.
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", tmp_path / "fresh.db")
+    server = mcp_server.build_server()                 # pure build, no DB I/O
+    opts = server.create_initialization_options()      # settings table missing
+    assert opts.instructions is None                   # fail-open, no OperationalError
+
+
+def test_instructions_reflect_live_profile():
+    p = _seed_db()
+    db.set_setting("coach_profile", "hardass", db_path=p)
+    server = mcp_server.build_server()
+    instr = server.create_initialization_options().instructions
+    assert instr and "mcp__fitness__" in instr
+    assert all(j in instr for j in ("CTL", "ATL", "TSB"))  # jargon translation retained
+    assert any(m in instr.lower() for m in ("no excuse", "this is on you", "relentless"))
+
+
+def test_instructions_change_between_calls():
+    # regression guard: live per-connect, NOT cached at build. Changing the
+    # setting between two calls must change the advertised instructions.
+    p = _seed_db()
+    server = mcp_server.build_server()
+    db.set_setting("coach_profile", "hardass", db_path=p)
+    hard = server.create_initialization_options().instructions
+    db.set_setting("coach_profile", "supportive", db_path=p)
+    supp = server.create_initialization_options().instructions
+    assert hard != supp
+    assert "no excuse" not in supp.lower()
+
+
+def test_instructions_fail_open_on_resolve_error(monkeypatch):
+    _seed_db()
+    server = mcp_server.build_server()
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(mcp_server.coach, "resolve_coach_profile", _boom)
+    opts = server.create_initialization_options()  # must not raise
+    assert opts.instructions is None
