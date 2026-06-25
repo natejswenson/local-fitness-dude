@@ -31,3 +31,17 @@ jobs:
 
       - name: Score the agent prompt
         run: uv run python scripts/score_prompt.py
+
+      # Frontend: type-check + production build. CI does NOT build the Docker
+      # image, but this catches TS errors / broken builds before merge.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend (tsc -b && vite build)
+        run: |
+          corepack enable
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
