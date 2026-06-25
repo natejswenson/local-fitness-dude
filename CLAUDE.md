@@ -86,12 +86,30 @@ After the 2026-05-04 audit, these are guardrails. Don't regress them.
 - **Rebuild the container after every change.** It's the live
   deployment at `https://fitness.home.local`; stale containers serve
   stale code. This is durable: rebuild even when you "only" changed
-  the frontend (the SPA gets baked into stage 1).
+  the frontend (the SPA gets baked into stage 1). Compose lives in the
+  Traefik repo: `docker compose up -d --build local-fitness` from
+  `/Users/natejswenson/localrepo/traefik`.
+- **CI does NOT build the container image.** CI runs `pnpm build` on the
+  host and `pytest`, never `docker build`. So a green CI does not prove
+  the image builds — a `node`/base-image bump or Dockerfile change can
+  pass CI and still break `docker compose up --build` (this bit us once:
+  `node:26` dropped bundled `corepack`). Always rebuild the container
+  yourself after touching the `Dockerfile`, base images, or web deps.
 - **Devlog the change.** Each meaningful PR gets a `devlog/` entry —
   manual prefix today, `/devlog` skill (auto from git commits) going
   forward.
 - **Commit messages explain why.** Short subject, body when motivation
   isn't obvious from the diff. Co-authored-by line stays.
+- **Work through `feature/* → dev → main`.** Normal changes land via a PR
+  into `dev`, then a `dev → main` promotion — never a direct push to
+  `main`/`dev` (admin break-glass aside). See *Branching & release
+  strategy* below for the full flow.
+- **Keep CLAUDE.md current — in the same commit/PR.** Any change that
+  alters the workflow, architecture, deploy/branch model, security
+  contract, or an env var updates the relevant CLAUDE.md section as part
+  of that same commit, not as a follow-up. CLAUDE.md is the source of
+  truth future-you reads first; a diff that changes behavior but leaves
+  CLAUDE.md stale is incomplete.
 
 ## Branching & release strategy
 
@@ -118,6 +136,17 @@ version-driven release.
   per PR (or add a dependabot-automerge Action if it gets tedious).
 - **`workflow_run` evaluates the default branch's copy** of `release.yml`,
   so any change to its trigger must land on `main` to take effect.
+- **Reset `dev` onto `main` after every promotion.** A squash-merged
+  `dev → main` leaves `dev` with diverged history (identical tree, but
+  ahead/behind by 1), so the *next* promotion PR shows phantom diffs.
+  Native auto-merge does not fix this (the natejswenson.io CI job did).
+  After a promotion: flip `dev` protection `allow_force_pushes: true`,
+  `PATCH .../git/refs/heads/dev` to main's SHA with `force=true`, restore
+  protection. A small "reset dev after promotion" Action would automate
+  this — not yet added.
+- **`dev` and `main` are deletion-protected**, so the repo-wide
+  delete-branch-on-merge does NOT eat `dev` on a promotion — only
+  `feature/*` heads are auto-deleted.
 
 ## Answering fitness questions (in-repo Q&A)
 
@@ -153,7 +182,12 @@ These are settled — don't redesign without a reason.
   from `localStorage`; `AuthGate` wraps the route tree and re-prompts
   on 401 mid-session.
 - **CI dep scanning**: `.github/dependabot.yml` (pip / npm / docker /
-  github-actions, weekly).
+  github-actions, weekly), `target-branch: dev` so bumps flow through the
+  promotion path.
+- **Branch protection**: `main` + `dev` both gated on the CI `validate`
+  check + a PR, squash-only, linear history, `enforce_admins: false`
+  (admin break-glass). Repo settings: auto-merge + delete-branch-on-merge
+  on. See *Branching & release strategy*.
 
 ## File-layout reference
 
