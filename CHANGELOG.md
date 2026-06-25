@@ -4,6 +4,30 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-06-24
+
+### Changed
+- **Adopted a `feature/* → dev → main` branch model** (mirrors the
+  `natejswenson.io` workflow, adapted for a public repo). `main` is the
+  default/production branch and `dev` is integration; both are protected
+  (CI `validate` green + a PR required, linear history, squash-only,
+  branch auto-deleted on merge, 0 required reviews so a green PR
+  self-merges via native auto-merge). `enforce_admins` is off as a
+  deliberate solo-dev break-glass path. The old `master` branch was
+  renamed to `main`.
+- **Release is now auto-tagged on a `dev → main` promotion.** `release.yml`
+  stays version-driven and is retargeted to `[main]`: a promotion that
+  bumps this version (with a matching CHANGELOG entry) auto-cuts the tag;
+  a no-bump promotion is an idempotent no-op. CI runs on `[main, dev]`.
+- **Dependabot now targets `dev`** on all four ecosystems, so dependency
+  bumps flow through the same promotion path.
+
+### Fixed
+- **Container build under `node:26`**: the base-image bump dropped the
+  bundled `corepack` shim, breaking `corepack enable`. Install
+  `corepack@latest` explicitly in the web-builder stage. (CI didn't catch
+  it — CI runs `pnpm build` on the host, not the Docker image.)
+
 ## [0.11.0] - 2026-06-23
 
 ### Added
