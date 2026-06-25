@@ -8,8 +8,10 @@
 FROM node:26-bookworm-slim AS web-builder
 WORKDIR /web
 
-# Use pnpm via corepack (matches the host workflow).
-RUN corepack enable
+# Use pnpm via corepack (matches the host workflow). node:26 dropped the
+# bundled corepack shim, so install it explicitly before enabling — it then
+# honors the `packageManager: pnpm@x` pin in web/package.json.
+RUN npm install -g corepack@latest && corepack enable
 
 # Harden the registry fetch: rolldown's platform-specific native binding is
 # an OPTIONAL dependency, so a flaky download makes `pnpm install` succeed
