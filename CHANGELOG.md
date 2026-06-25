@@ -4,6 +4,20 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-06-25
+
+### Fixed
+- **Frontend rendered a black screen — `react` and `react-dom` versions had
+  drifted apart.** Dependabot's react bump (#15) moved `react` to 19.2.6 but
+  left `react-dom` at 19.2.5. React 19 requires the two packages to be the
+  exact same version and throws *Minified React error #527* on mount when they
+  differ, so the SPA mounted nothing and left the dark `bg-bg` background
+  showing. `tsc -b` + `vite build` never execute the app, so CI stayed green
+  and the broken bundle shipped to the container. Pinned both packages to
+  19.2.7 so they move in lockstep. Verified the live container renders via a
+  headless-Chrome DOM probe (root no longer empty; only the expected auth-gate
+  401 remains).
+
 ## [0.12.0] - 2026-06-24
 
 ### Changed
