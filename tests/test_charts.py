@@ -294,24 +294,33 @@ def _line_grid_widths(out):
             for ln in out.splitlines() if "│" in ln]
 
 
-def test_line_short_window_is_daily_and_aligned():
-    # <= weekly_after days → one column per day; every grid row is the same width.
+def test_line_interpolates_to_wide_canvas_and_aligns():
+    # The line is up-sampled to ~`width` columns so it reads as a slope across many
+    # cells, not a few points stacking into vertical risers. Every grid row is the
+    # same (wide) width, and a short window shows its daily endpoints.
     out = charts.render_line(_days_from("2026-06-01", 10),
-                             [float(50 + i) for i in range(10)], weekly_after=35)
-    assert "06-01 → 06-10" in out                 # daily endpoints
+                             [float(50 + i) for i in range(10)], weekly_after=35, width=48)
+    assert "06-01" in out and "06-10" in out      # daily endpoints on the x-axis
     widths = _line_grid_widths(out)
-    assert widths and all(w == 10 for w in widths)  # 10 daily columns, uniform
+    assert widths and all(w == widths[0] for w in widths)   # uniform → aligned
+    assert widths[0] == 48                        # interpolated up to the target width
 
 
-def test_line_long_window_collapses_to_weekly():
-    # > weekly_after days → one point per ISO week, so a 90-day window is ~13-14
-    # columns (fully visible), never 90; rows stay uniform width (aligned).
+def test_line_long_window_stays_compact_and_aligned():
+    # A 90-day window collapses to weekly means then interpolates onto the
+    # fixed-width canvas — bounded to `width` columns, never 90+, rows uniform.
     out = charts.render_line(_days_from("2026-03-27", 91),
-                             [float(50 + (i % 7)) for i in range(91)])
+                             [float(50 + (i % 7)) for i in range(91)], width=48)
     widths = _line_grid_widths(out)
-    assert widths
-    assert 10 <= widths[0] <= 16                   # weeks, not 91 daily columns
-    assert all(w == widths[0] for w in widths)     # aligned
+    assert widths and all(w == 48 for w in widths)
+
+
+def test_weekly_means_aggregates_by_iso_week():
+    # 2026-06-01 is a Monday → two clean Mon-Sun weeks with distinct means.
+    dates = _days_from("2026-06-01", 14)
+    labels, means = charts._weekly_means(dates, [10.0] * 7 + [20.0] * 7)
+    assert means == [10.0, 20.0]
+    assert labels[0].startswith("Jun")
 
 
 def test_line_axis_labels_are_data_min_and_max():
