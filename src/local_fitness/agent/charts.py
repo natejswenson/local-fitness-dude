@@ -275,7 +275,8 @@ def render_line(
     *,
     value_fmt: Callable[[float], str] = lambda v: f"{v:g}",
     title: str | None = None,
-    height: int = 9,
+    height: int = 11,
+    width: int = 48,
     weekly_after: int = 35,
 ) -> str:
     """A *colored* line chart: a connected value-path drawn in heat-colored emoji
@@ -295,17 +296,33 @@ def render_line(
         labels = [d[5:] for d in dates]
     lo, hi, span = _norm(values)
     H = max(3, height)
-    W = len(values)
+    m = len(values)
+    # Up-sample to ~`width` columns by linear interpolation between the data
+    # points. The horizontal room is what makes it read as a *line*: a slope
+    # spread across many columns of single cells, instead of a few points
+    # stacking into tall vertical risers. Color + height track the interpolated
+    # value; the y-scale stays anchored to the real data range.
+    cols_n = max(m, width)
+    if m == 1:
+        col_vals = [values[0]] * cols_n
+    else:
+        col_vals = []
+        for x in range(cols_n):
+            t = x / (cols_n - 1) * (m - 1)
+            i = int(t)
+            frac = t - i
+            col_vals.append(values[i] if i + 1 >= m
+                            else values[i] * (1 - frac) + values[i + 1] * frac)
 
     def row_of(v: float) -> int:
         return round((v - lo) / span * (H - 1))
 
-    grid = [[_GAP] * W for _ in range(H)]
+    grid = [[_GAP] * cols_n for _ in range(H)]
     prev = None
-    for x, v in enumerate(values):
+    for x, v in enumerate(col_vals):
         r = row_of(v)
         color = _heat((v - lo) / span)
-        if prev is not None:                       # fill the riser between points
+        if prev is not None:                       # fill the (now-small) riser
             for rr in range(min(prev, r), max(prev, r) + 1):
                 grid[rr][x] = color
         grid[r][x] = color
@@ -320,6 +337,6 @@ def render_line(
         else:
             label = " " * axis_w
         lines.append(f"{label} │{''.join(grid[y])}")
-    lines.append(f"{' ' * axis_w} └{'──' * W}")
-    lines.append(f"{' ' * axis_w}  {labels[0]} → {labels[-1]}")
+    lines.append(f"{' ' * axis_w} └{'──' * cols_n}")
+    lines.append(f"{' ' * axis_w}  {labels[0]}{' ' * (2 * cols_n - len(labels[0]) - len(labels[-1]))}{labels[-1]}")
     return "\n".join(lines)
