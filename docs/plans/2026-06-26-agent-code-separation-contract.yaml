@@ -1,0 +1,43 @@
+version: "1.0"
+title: "Agent/Code Separation — brief-planner + scoped generator + live evals"
+date: "2026-06-26"
+source: design
+
+api_surface:
+  - module: agent/brief_planner.py
+    functions:
+      - "assemble_brief_context(db_path: Path | None = None, *, today: str | None = None) -> BriefContext"
+      - "suggest_tone(category: str, metrics: dict, profile: CoachProfile) -> Tone"
+      - "suggest_chart(category: str) -> TakeawayMetric | None"
+      - "score_salience(candidate: CandidateTakeaway) -> float"
+  - module: agent/schemas.py
+    types:
+      - "CandidateTakeaway{category, fired_triggers, metrics, suggested_tone, chart_metric, salience, evidence}"
+      - "BriefContext{date, user_name, candidates, continuity, plan_today}"
+  - module: agent/grounding.py
+    functions:
+      - "validate_grounding(brief: Brief, context: BriefContext) -> list[GroundingError]"
+
+invariants:
+  checkable:
+    - "The generator prompt contains no threshold predicates, tone-selection rules, chart-metric maps, or JSON-formatting defense (those live in code)."
+    - "brief_planner, grounding, and schemas import no Claude Agent SDK (purely deterministic)."
+    - "The evals CI job is secret-gated on ANTHROPIC_API_KEY so fork PRs skip cleanly."
+  testable:
+    - "assemble_brief_context is deterministic: identical DB state yields an identical BriefContext."
+    - "Each trigger predicate fires exactly on its documented condition (fabricated-snapshot unit tests)."
+    - "validate_grounding flags an invented number and passes a grounded one (units-aware tolerance)."
+    - "suggest_tone reproduces the prompt's data->tone rules composed with the harsh-block gate."
+    - "Live eval over all golden fixtures: the generated brief is schema-valid, factually grounded, leads with the top-salience fired category, and its tone sits in the active profile's band."
+
+integration_points:
+  - "briefing.generate_streaming becomes: assemble_brief_context -> scoped generate -> validate_grounding -> save_brief."
+  - "briefs.save_brief gains a grounding gate before the atomic write."
+  - "ci.yml gains an `evals` job (secret-gated, cost-capped, MAX_EVAL_GENERATIONS hard cap)."
+  - "ab_brief / eval brief-parsing routes through briefs._salvage_takeaways (phase-0 flakiness fix)."
+
+ambiguity_resolutions:
+  - "Architecture: deterministic pre-pass + ONE scoped LLM generator (not full multi-agent) — user decision."
+  - "Eval gating: full live-model evals per-PR, secret-gated + cost-capped — user decision (more aggressive than the hybrid default)."
+  - "Phase 0 (fix ab_brief --run flakiness via the salvage parser) is a hard prerequisite; the evals job runs continue-on-error until 20 clean live runs, then becomes a required check."
+  - "Tone de-LLM-ing is partial: clearly-deterministic data->tone rules move to code; genuinely ambiguous tone calls stay with the generator (eval checks the band, not the exact tone)."
