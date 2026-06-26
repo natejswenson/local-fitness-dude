@@ -274,6 +274,9 @@ def test_calendar_single_day():
 
 # --- render_line --------------------------------------------------------------
 
+_BOX = "─╭╮╰╯│"
+
+
 def _has_braille(s):
     return any(0x2800 <= ord(c) <= 0x28FF for c in s)
 
@@ -283,28 +286,29 @@ def test_line_empty_returns_no_data():
     assert charts.render_line([], [], title="rhr").startswith("rhr\n")
 
 
-def test_line_draws_a_braille_curve_not_emoji():
-    # The line is rendered in braille (smooth sub-character dots), NOT emoji
-    # squares (chunky blocks). It carries a y-axis (┤) and a baseline (└).
+def test_line_draws_box_glyphs_not_braille_or_emoji():
+    # The line is 1-cell box-drawing glyphs (render everywhere) — NOT braille
+    # (font-dependent) and NOT emoji squares (chunky). y-axis (┤) + baseline (└).
     out = charts.render_line(_days_from("2026-06-01", 12),
                              [49.0 + (i % 5) for i in range(12)], value_fmt=_ints)
-    assert _has_braille(out)                        # a braille line
+    assert any(g in out for g in _BOX)             # a box-drawing line
     assert "┤" in out and "└" in out               # y-axis + baseline
-    assert all(sq not in out for sq in charts._HEAT)   # mono — no emoji squares
+    assert not _has_braille(out)                    # not braille
+    assert all(sq not in out for sq in charts._HEAT)   # not emoji
 
 
-def _first_dot_col(out):
-    """Per chart row, the column of its first drawn (non-space) braille cell."""
+def _first_glyph_col(out):
+    """Per chart row, the column of its first drawn (non-space) glyph."""
     rows = [ln.split("┤", 1)[1] for ln in out.splitlines() if "┤" in ln]
     return [next((i for i, ch in enumerate(r) if ch != " "), None) for r in rows]
 
 
 def test_line_rising_series_trends_up_left_to_right():
     # A monotonic rise: the high part of the curve (top row) sits to the RIGHT of
-    # the low part (bottom row). Small series → no smoothing.
+    # the low part (bottom row). Small series → light/no smoothing.
     out = charts.render_line(_days_from("2026-06-01", 6), [49.0, 51, 52, 54, 56, 57],
                              value_fmt=_ints)
-    cols = _first_dot_col(out)
+    cols = _first_glyph_col(out)
     top, bottom = cols[0], cols[-1]
     assert top is not None and bottom is not None
     assert top > bottom        # the peak is reached later (further right) than the trough
@@ -318,16 +322,13 @@ def test_line_axis_labels_are_data_min_and_max():
     assert "49 ┤" in out                           # bottom axis = window min
 
 
-def test_line_fixed_width_regardless_of_window():
-    # Braille packs any window into `width` character columns, so the baseline is
-    # the same width for a 30-day and a 300-day series (stays on one screen).
-    short = charts.render_line(_days_from("2026-06-01", 30), [50.0] * 30, width=70)
-    long = charts.render_line(_days_from("2026-01-01", 300), [50.0 + (i % 9) for i in range(300)], width=70)
-
-    def base_w(out):
-        return len(next(ln for ln in out.splitlines() if "└" in ln).split("└", 1)[1])
-
-    assert base_w(short) == 70 and base_w(long) == 70
+def test_line_down_samples_long_window_to_max_width():
+    # A long window is down-sampled so the baseline never exceeds max_width columns
+    # (the key to a clean, non-stair-stepped curve + staying on one screen).
+    out = charts.render_line(_days_from("2026-01-01", 300),
+                             [50.0 + (i % 9) for i in range(300)], max_width=58)
+    base = next(ln for ln in out.splitlines() if "└" in ln)
+    assert len(base.split("└", 1)[1]) <= 58
 
 
 def test_line_handles_negative_series():
@@ -335,9 +336,9 @@ def test_line_handles_negative_series():
                              [-30.0, -25.0, -20.0, -28.0, -15.0, -22.0],
                              value_fmt=lambda v: f"{v:.0f}")
     assert "-30" in out and "-15" in out
-    assert _has_braille(out)
+    assert any(g in out for g in _BOX)
 
 
 def test_line_single_point():
     out = charts.render_line(["2026-06-03"], [52.0], value_fmt=_ints)
-    assert _has_braille(out)
+    assert "─" in out
