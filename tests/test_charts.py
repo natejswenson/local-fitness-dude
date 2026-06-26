@@ -238,9 +238,24 @@ def test_calendar_missing_in_window_day_is_blank_square():
 
 def test_calendar_pads_days_before_window_start():
     # Start mid-week (2026-06-03 is a Wednesday): Mon/Tue of that week are
-    # out-of-window pads, not data cells.
+    # out-of-window pads, rendered as the emoji-width ⬛ (not a narrow ASCII dot).
     out = charts.render_calendar(_days_from("2026-06-03", 5), [1.0, 2.0, 3.0, 4.0, 5.0])
-    assert "·" in out                                # "·" alignment pad
+    assert "⬛" in out                               # emoji-width out-of-window pad
+
+
+def test_calendar_grid_rows_have_uniform_emoji_width_no_ascii_pad():
+    # The alignment fix: every grid row is exactly 7 emoji cells (heat / ⬜ / ⬛),
+    # never a narrow ASCII "·" pad — mixing ASCII and emoji widths is what broke
+    # column alignment. Use a window with leading AND trailing partial weeks.
+    dates = _days_from("2026-06-03", 10)             # Wed start → both-end pads
+    out = charts.render_calendar(dates, [50.0 + (i % 5) for i in range(10)])
+    cells = set(charts._HEAT) | {"⬜", "⬛"}
+    grid_rows = [ln for ln in out.splitlines()
+                 if "(low)" not in ln and any(c in ln for c in cells)]
+    assert grid_rows
+    for ln in grid_rows:
+        assert "·" not in ln                         # no ASCII dot pad in the grid
+        assert sum(ln.count(c) for c in cells) == 7  # uniform 7-cell weeks
 
 
 def test_calendar_handles_negative_series():
