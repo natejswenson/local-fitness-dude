@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from local_fitness import db
+from local_fitness.agent import status as status_mod
 from local_fitness.agent import tools
 from local_fitness.agent.status import assemble_status
 
@@ -134,3 +135,86 @@ def test_coach_prompt_includes_output_formatting_contract(seeded_status_db):
     # The contract is inherited via the embedded system_prompt persona.
     assert "Formatting your chat replies" in text
     assert "NOT one wide grid" in text
+
+
+# --- pure direction/slope/interpretation helpers ---------------------------
+
+def test_arrow_directions():
+    assert status_mod._arrow(1) == "↑"
+    assert status_mod._arrow(-1) == "↓"
+    assert status_mod._arrow(0) == "→"
+
+
+def test_slope_arrow_too_few_points_returns_none():
+    assert status_mod._slope_arrow([]) is None
+    assert status_mod._slope_arrow([5.0]) is None
+
+
+def test_slope_arrow_reads_trend_direction():
+    assert status_mod._slope_arrow([1.0, 2.0, 3.0]) == "↑"
+    assert status_mod._slope_arrow([3.0, 2.0, 1.0]) == "↓"
+    assert status_mod._slope_arrow([2.0, 2.0, 2.0]) == "→"
+
+
+def test_tsb_interpretation_all_bands():
+    assert status_mod._tsb_interpretation(None) == "no training-load data yet"
+    assert status_mod._tsb_interpretation(-25) == "very fatigued"
+    assert status_mod._tsb_interpretation(-15) == "fatigued"
+    assert status_mod._tsb_interpretation(10) == "fresh"
+    assert status_mod._tsb_interpretation(0) == "neutral"
+
+
+# --- assemble_status: trend slope + pace-bearing workout -------------------
+
+@pytest.fixture
+def trend_status_db(tmp_path, monkeypatch):
+    """Seeded with several days of trend metrics + a paced workout, so the
+    trend-slope path (>=2 points) and the formatted-pace field both fire."""
+    p = tmp_path / "fitness.db"
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", p)
+    monkeypatch.setenv("LOCAL_FITNESS_NOTES_PATH", str(tmp_path / "user_notes.md"))
+    db.init_schema(p)
+    from datetime import timedelta
+
+    today = date.today()
+    with db.connect(p) as conn:
+        # In date order (oldest→newest) steps DECLINE → a down slope arrow.
+        # offset 0 is today; older days carry the higher counts.
+        for offset, steps in enumerate((9000, 10000, 11000, 12000)):
+            d = (today - timedelta(days=offset)).isoformat()
+            conn.execute(
+                "INSERT INTO daily_metrics (date, steps, sleep_score, max_stress) "
+                "VALUES (?, ?, ?, ?)",
+                (d, steps, 70 + offset, 40 - offset),
+            )
+        # Workout carries a real pace so the formatted pace field is emitted.
+        conn.execute(
+            "INSERT INTO activities (activity_id, date, start_time, activity_type, "
+            "activity_name, duration_seconds, distance_meters, avg_hr, "
+            "avg_pace_sec_per_km, training_load) "
+            "VALUES (1, ?, ?, 'running', 'Paced Run', 1800, 5000, 150, 300.0, 50.0)",
+            (today.isoformat(), today.isoformat() + "T07:00:00"),
+        )
+    return p
+
+
+def test_assemble_status_trend_slope_and_pace(trend_status_db):
+    status = assemble_status()
+
+    steps_row = next(m for m in status["metrics"] if m["metric"] == "steps")
+    assert steps_row["treatment"] == "trend_arrow"
+    # Descending steps across the window → a downward slope arrow (covers
+    # both the >=2-point slope path and the negative-direction arrow).
+    assert steps_row["arrow"] == "↓"
+
+    w = status["recent_workouts"][0]
+    # 300 sec/km → ~8:03 min/mi; the formatted-pace field is present.
+    assert "pace_min_per_mi" in w
+    assert w["duration_formatted"] == "30:00"
+
+
+def test_assemble_status_seeded_tsb_interpretation(seeded_status_db):
+    # The seeded baseline carries tsb=-5.0 → "neutral" via _training_load.
+    status = assemble_status()
+    assert status["training_load"]["tsb"] == -5.0
+    assert status["training_load"]["interpretation"] == "neutral"
