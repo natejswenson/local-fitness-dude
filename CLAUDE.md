@@ -142,14 +142,18 @@ version-driven release.
   per PR (or add a dependabot-automerge Action if it gets tedious).
 - **`workflow_run` evaluates the default branch's copy** of `release.yml`,
   so any change to its trigger must land on `main` to take effect.
-- **Reset `dev` onto `main` after every promotion.** A squash-merged
-  `dev → main` leaves `dev` with diverged history (identical tree, but
-  ahead/behind by 1), so the *next* promotion PR shows phantom diffs.
-  Native auto-merge does not fix this (the natejswenson.io CI job did).
-  After a promotion: flip `dev` protection `allow_force_pushes: true`,
-  `PATCH .../git/refs/heads/dev` to main's SHA with `force=true`, restore
-  protection. A small "reset dev after promotion" Action would automate
-  this — not yet added.
+- **`dev` is reset onto `main` after every promotion — now automated.** A
+  squash-merged `dev → main` leaves `dev` with diverged history (identical
+  tree, but ahead/behind by 1), so the *next* promotion PR would show phantom
+  diffs. The `reset-dev-after-promotion.yml` workflow runs on every push to
+  `main` and force-resets `dev` to main's SHA via `ops/reset-dev-to-main.sh`
+  (which flips `dev`'s `allow_force_pushes` on, force-updates the ref, and
+  restores protection — the old manual dance, scripted). It's idempotent
+  (no-op when `dev` already equals `main`, e.g. an admin break-glass push).
+  **Requires a `DEV_RESET_PAT` repo secret** (a PAT with Administration:write +
+  Contents:write — the default `GITHUB_TOKEN` can't edit protection or
+  force-push a protected branch); without it the job skips cleanly. Manual
+  fallback: run `ops/reset-dev-to-main.sh` locally with an admin-authed `gh`.
 - **`dev` and `main` are deletion-protected**, so the repo-wide
   delete-branch-on-merge does NOT eat `dev` on a promotion — only
   `feature/*` heads are auto-deleted.
