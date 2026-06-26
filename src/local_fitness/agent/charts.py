@@ -81,12 +81,22 @@ def render_bar_chart(
     if not values:
         return f"{title}\n{_NO_DATA}" if title else _NO_DATA
     lo, hi, span = _norm(values)
+    flat = hi == lo  # constant series has no range to scale across
     zero_based = lo >= 0
     denom = hi if (zero_based and hi > 0) else span
     label_w = max((len(s) for s in labels), default=0)
     lines = [title] if title else []
     for lab, v in zip(labels, values):
-        frac = (v / denom) if zero_based else ((v - lo) / span)
+        # A flat (all-equal) series fills every bar regardless of sign — matches
+        # how render_combo_chart plants a flat series at full height. Without this
+        # a flat *negative* series ((v-lo)/span == 0) would render empty bars
+        # (the TSB / freshness shape) while a flat positive one renders full ones.
+        # Exception: an all-zero non-negative window (a rest-day stretch) honors
+        # the zero-based "zero = empty bar" contract and renders empty.
+        if flat:
+            frac = 0.0 if (zero_based and hi == 0) else 1.0
+        else:
+            frac = (v / denom) if zero_based else ((v - lo) / span)
         n = max(0, round(frac * width))
         rel = (v - lo) / span
         bar = _heat(rel) * n
@@ -101,7 +111,6 @@ def render_combo_chart(
     value_fmt: Callable[[float], str] = lambda v: f"{v:g}",
     height: int = 9,
     title: str | None = None,
-    unit: str = "",
 ) -> str:
     """2D vertical bars (``█``) with a least-squares trend line (``•``) overlaid.
 
@@ -112,12 +121,19 @@ def render_combo_chart(
     """
     if not values:
         return f"{title}\n{_NO_DATA}" if title else _NO_DATA
-    lo, hi, span = _norm(values)
+    lo, hi = min(values), max(values)
     n = len(values)
     height = max(2, height)
+    flat = hi == lo  # a constant series has no range to scale across
 
     def row_of(v: float) -> int:
-        return max(0, min(height - 1, round((v - lo) / span * (height - 1))))
+        # Flat series: there is no real range, so plant every bar at full height.
+        # This keeps █ visible (the bar fills rows 0..height-2; the trend marker
+        # only claims the top row) instead of collapsing to a single overwritten
+        # cell at row 0.
+        if flat:
+            return height - 1
+        return max(0, min(height - 1, round((v - lo) / (hi - lo) * (height - 1))))
 
     grid = [[" "] * n for _ in range(height)]
     for x, v in enumerate(values):
@@ -126,20 +142,37 @@ def render_combo_chart(
     for x, tv in enumerate(_trend(values)):
         grid[row_of(tv)][x] = "•"
 
-    # y-axis labels: top, middle, bottom carry real values; the rest align blank.
-    axis_w = max(len(value_fmt(lo)), len(value_fmt(hi)))
+    # y-axis labels keyed by row → real value. A flat series has no range to
+    # label, so we print the single constant value once (mid-axis) rather than
+    # fabricating a lo / lo+½ / lo+1 spread that the data never spans. A real
+    # range labels top / middle / bottom.
+    if flat:
+        axis_vals = {height // 2: lo}
+    else:
+        axis_vals = {y: lo + (hi - lo) * y / (height - 1) for y in (height - 1, height // 2, 0)}
+    axis_labels = {y: value_fmt(v) for y, v in axis_vals.items()}
+    # Width the axis column off every label actually printed (not just lo / hi),
+    # so a fractional midpoint can't shove the ┤ column out of line.
+    axis_w = max((len(s) for s in axis_labels.values()), default=0)
     lines = [title] if title else []
     for y in range(height - 1, -1, -1):
-        if y in (height - 1, height // 2, 0):
-            val = lo + span * y / (height - 1)
-            label = f"{value_fmt(val):>{axis_w}}"
-        else:
-            label = " " * axis_w
+        label = f"{axis_labels[y]:>{axis_w}}" if y in axis_labels else " " * axis_w
         lines.append(f"{label} ┤{''.join(grid[y])}")
     lines.append(f"{' ' * axis_w} └{'─' * n}")
+    # Report the trend as its fitted endpoints over the window, formatted with the
+    # same value_fmt as the axis. This keeps the footer unit-consistent (rhr reads
+    # "55 → 53", sleep "7.5h → 7.6h") instead of printing a raw-unit per-step slope
+    # against a formatted axis.
+    fit = _trend(values)
     slope = _slope(values)
     arrow = "rising" if slope > 0 else "falling" if slope < 0 else "flat"
-    lines.append(f"{' ' * axis_w}  trend {slope:+.2f}{unit}/step · {arrow}")
+    # The on-canvas trend marker is clamped to the drawn rows, so clamp the
+    # reported endpoints to the data range too — otherwise an extrapolating
+    # least-squares line prints values the axis never shows and the • never
+    # reaches. Direction still comes from the unclamped slope above.
+    start = min(hi, max(lo, fit[0]))
+    end = min(hi, max(lo, fit[-1]))
+    lines.append(f"{' ' * axis_w}  trend {value_fmt(start)} → {value_fmt(end)} · {arrow}")
     return "\n".join(lines)
 
 

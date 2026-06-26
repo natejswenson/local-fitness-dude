@@ -293,7 +293,11 @@ def _chart_value_fmt(metric: str):
     """Per-metric value formatter so the chart shows hours / decimals sensibly."""
     if metric.endswith("_seconds"):
         return lambda v: f"{v / 3600:.1f}h"
-    if metric in _CHART_BASELINE_METRICS:
+    # Baselines (ctl/atl/tsb) and vo2_max move in fractions across a realistic
+    # window (vo2_max 47.9→48.4); integer rounding would collapse every axis
+    # label to one value. Genuinely-integer metrics (steps, intensity, rhr) stay
+    # integer-formatted below.
+    if metric in _CHART_BASELINE_METRICS or metric == "vo2_max":
         return lambda v: f"{v:.1f}"
     return lambda v: f"{int(round(v))}"
 
