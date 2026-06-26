@@ -1,6 +1,6 @@
 [project]
 name = "local-fitness"
-version = "0.12.1"
+version = "0.13.0"
 description = "Local Garmin-data agent: hands-off ingest + Claude-powered daily briefings"
 readme = "README.md"
 authors = [
@@ -42,7 +42,7 @@ dev = [
 # aren't exercised here by design. See CHANGELOG 0.1.0.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=local_fitness --cov=scripts --cov-report=term-missing --cov-fail-under=43"
+addopts = "--cov=local_fitness --cov=scripts --cov-report=term-missing --cov-fail-under=85"
 
 [tool.coverage.run]
 source = ["local_fitness", "scripts"]

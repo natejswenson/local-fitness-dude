@@ -146,6 +146,7 @@ def test_save_brief_salvages_nested_takeaways_dict(briefs_dir):
     result = briefs.save_brief(payload)
     assert result["saved"] is True
     assert len(result["brief"].takeaways) == 1
+    assert result["brief"].takeaways[0].headline == _valid_takeaway()["headline"]
     assert (briefs_dir / f"{date.today().isoformat()}.json").exists()
 
 
@@ -229,3 +230,166 @@ def test_recent_briefs_summary_renders_recent_days(briefs_dir, monkeypatch):
 
 def test_recent_briefs_summary_empty_when_no_history(briefs_dir):
     assert briefs._recent_briefs_summary(today=date(2026, 6, 16)) == ""
+
+
+def _write_raw_json(out_dir, d: str, text: str):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{d}.json").write_text(text, encoding="utf-8")
+
+
+def test_recent_briefs_summary_skips_unparseable_and_emptyish(briefs_dir):
+    """The lookback loop must survive a corrupt file, a takeaway-less brief,
+    and a takeaway with no headline — all three are skipped, leaving only the
+    one good headline rendered."""
+    # The briefs_dir fixture already points DEFAULT_BRIEFINGS_DIR at this dir.
+    anchor = date(2026, 6, 16)
+    d1 = (anchor - timedelta(days=1)).isoformat()
+    d2 = (anchor - timedelta(days=2)).isoformat()
+    d3 = (anchor - timedelta(days=3)).isoformat()
+    d4 = (anchor - timedelta(days=4)).isoformat()
+
+    _write_raw_json(briefs_dir, d1, "{ not valid json")          # 289-290 skip
+    _write_raw_json(briefs_dir, d2, '{"takeaways": []}')          # 293 skip (no takeaways)
+    _write_raw_json(
+        briefs_dir, d3,
+        '{"takeaways": [{"headline": "", "tone": "neutral"}]}',   # 300 skip (no headline)
+    )
+    _write_raw_json(
+        briefs_dir, d4,
+        '{"takeaways": [{"headline": "Good run", "tone": "positive",'
+        ' "summary": "Solid effort."}]}',
+    )
+
+    summary = briefs._recent_briefs_summary(today=anchor)
+    assert "Good run" in summary
+    assert "Solid effort." in summary
+    # The empty-headline takeaway produced no bullet line.
+    assert "- [" in summary
+    assert summary.count("- [") == 1
+
+
+# --- _default_briefings_dir env override -----------------------------------
+
+def test_default_briefings_dir_honors_env_override(monkeypatch, tmp_path):
+    override = tmp_path / "custom-briefings"
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEFINGS_DIR", str(override))
+    assert briefs._default_briefings_dir() == override
+
+
+# --- _strip_inline_control_chars: escape handling --------------------------
+
+def test_strip_keeps_valid_json_escape():
+    # A legit \n escape is copied verbatim (both chars survive).
+    assert briefs._strip_inline_control_chars('"a\\nb"') == '"a\\nb"'
+
+
+def test_strip_drops_invalid_escape_keeps_char():
+    # \| is not a JSON escape — drop the backslash, keep the pipe.
+    assert briefs._strip_inline_control_chars('"a\\|b"') == '"a|b"'
+
+
+def test_strip_drops_invalid_escape_of_control_char():
+    # Backslash followed by a raw control char: drop both.
+    assert briefs._strip_inline_control_chars('"a\\\x01b"') == '"ab"'
+
+
+def test_strip_drops_trailing_backslash():
+    # A string that ends mid-escape (backslash with nothing after) drops it.
+    assert briefs._strip_inline_control_chars('"abc\\') == '"abc'
+
+
+# --- _fix_numeric_gaps_outside_strings: escape + unterminated --------------
+
+def test_fix_numeric_gaps_preserves_escaped_chars_in_string():
+    # Escaped quote inside a string must not terminate it; numbers with
+    # spaces inside the string prose are left untouched.
+    src = '{"note": "a \\" 1 2 b"}'
+    assert briefs._fix_numeric_gaps_outside_strings(src) == src
+
+
+def test_fix_numeric_gaps_handles_unterminated_string():
+    # An unterminated trailing string must flush without raising.
+    src = '{"x": "open and never closed'
+    assert briefs._fix_numeric_gaps_outside_strings(src) == src
+
+
+def test_fix_numeric_gaps_collapses_outside_strings():
+    # Whitespace between digits outside a string is collapsed.
+    assert briefs._fix_numeric_gaps_outside_strings("1 2") == "12"
+
+
+# --- _salvage_takeaways: branch coverage -----------------------------------
+
+def test_salvage_non_dict_returned_unchanged():
+    assert briefs._salvage_takeaways(["not", "a", "dict"]) == ["not", "a", "dict"]
+
+
+def test_salvage_finds_nested_and_stops_at_first(monkeypatch):
+    # Takeaways buried two structures deep, with sibling values after the
+    # match (exercises the early-return once `found` is set) and a list node
+    # that must be walked.
+    payload = {
+        "junk_list": [{"nope": 1}],
+        "wrapper": {"takeaways": [_valid_takeaway(headline="first")]},
+        "more": {"takeaways": [_valid_takeaway(headline="second")]},
+    }
+    salvaged = briefs._salvage_takeaways(payload)
+    assert [tk["headline"] for tk in salvaged["takeaways"]] == ["first"]
+
+
+def test_salvage_preserves_compatible_metadata():
+    payload = {
+        "date": "2026-06-01",
+        "user_name": "Nate",
+        "generated_at": "2026-06-01T08:00:00",
+        "ignored_int": 7,  # non-str metadata is dropped
+        "wrapper": {"takeaways": [_valid_takeaway()]},
+    }
+    salvaged = briefs._salvage_takeaways(payload)
+    assert salvaged["date"] == "2026-06-01"
+    assert salvaged["user_name"] == "Nate"
+    assert salvaged["generated_at"] == "2026-06-01T08:00:00"
+    assert "ignored_int" not in salvaged
+
+
+def test_salvage_nothing_recognizable_returns_payload():
+    payload = {"foo": "bar", "nested": {"baz": [1, 2, 3]}}
+    assert briefs._salvage_takeaways(payload) == payload
+
+
+# --- _extract_json: fence, bracket-scan, and raise paths -------------------
+
+def test_extract_json_no_json_raises():
+    with pytest.raises(ValueError, match="no JSON found"):
+        briefs._extract_json("just prose, no object here")
+
+
+def test_extract_json_bracket_scan_recovers_object():
+    # Direct decode fails on the leading prose; no fence; the first-{ to
+    # last-} bracket scan recovers the object.
+    text = 'Here you go: {"takeaways": [{"headline": "x"}]} thanks!'
+    out = briefs._extract_json(text)
+    assert out["takeaways"][0]["headline"] == "x"
+
+
+def test_extract_json_bracket_scan_failure_raises():
+    # Braces present but the contents are not JSON → the bracket-scan branch
+    # raises a descriptive ValueError.
+    with pytest.raises(ValueError, match="could not parse JSON"):
+        briefs._extract_json("prefix { not : valid json , } suffix")
+
+
+def test_extract_json_fence_unparseable_falls_through_to_raise():
+    # A ```json fence whose contents don't parse falls through; the bracket
+    # scan then also fails on the same garbage → ValueError.
+    text = "```json\n{ broken : json }\n```"
+    with pytest.raises(ValueError, match="could not parse JSON"):
+        briefs._extract_json(text)
+
+
+# --- load_latest: all-unparseable returns None -----------------------------
+
+def test_load_latest_returns_none_when_all_unparseable(briefs_dir):
+    _write_raw_json(briefs_dir, "2026-06-10", "{garbage")
+    _write_raw_json(briefs_dir, "2026-06-11", "also not json")
+    assert briefs.load_latest() is None

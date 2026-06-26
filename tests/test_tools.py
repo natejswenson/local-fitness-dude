@@ -111,6 +111,115 @@ def test_get_metric_trend_no_data(seeded):
     assert err  # vo2_max never seeded → no rows in window
 
 
+def test_chart_bar_default(seeded):
+    text, err = call(tools.chart, {"metric": "rhr", "days": 14})
+    assert not err
+    assert "rhr · last 14d" in text
+    assert any(sq in text for sq in tools.charts._HEAT)  # emoji-color bars
+
+
+def test_chart_combo_has_trendline(seeded):
+    # sleep_seconds varies across the window (steps is flat in the fixture), so
+    # bars and the overlaid trend line are both visible.
+    text, err = call(tools.chart, {"metric": "sleep_seconds", "days": 14, "style": "combo"})
+    assert not err
+    assert "█" in text and "•" in text and "┤" in text
+    assert "h" in text  # seconds formatted as hours on the axis
+
+
+def test_chart_spark(seeded):
+    text, err = call(tools.chart, {"metric": "rhr", "days": 14, "style": "spark"})
+    assert not err
+    assert any(b in text for b in tools.charts._BLOCKS)
+
+
+def test_chart_derived_weighted_intensity(seeded):
+    # mod(20) + 2×vig(5) = 30 for every seeded day; the tool must accept the
+    # derived metric name and not 500 on the computed column.
+    text, err = call(tools.chart, {"metric": "intensity_minutes_weighted", "days": 7})
+    assert not err
+    assert "intensity_minutes_weighted" in text
+
+
+def test_chart_baseline_metric_tsb(seeded):
+    text, err = call(tools.chart, {"metric": "tsb", "days": 14, "style": "combo"})
+    assert not err
+    assert "tsb" in text  # pulled from baselines, not daily_metrics
+    # The fixture's tsb is a flat -5.0 window: bars must still render, and the
+    # axis must show the real value, not a fabricated -4.5 / -4.0 spread.
+    assert "█" in text
+    assert "-5.0" in text
+    assert "-4.5" not in text
+
+
+@pytest.mark.parametrize("metric", ["ctl", "atl"])
+def test_chart_baseline_metrics_ctl_atl(seeded, metric):
+    # ctl/atl ride the same whitelisted f-string path against the baselines
+    # table as tsb; exercise both so the branch isn't covered by tsb alone.
+    text, err = call(tools.chart, {"metric": metric, "days": 14, "style": "spark"})
+    assert not err
+    assert metric in text
+
+
+def test_chart_combo_trend_footer_is_unit_consistent(seeded):
+    # Significant 1: the combo trend footer reports formatted endpoints (same
+    # value_fmt as the axis), never a raw-unit "/step" slope. sleep_seconds shows
+    # an "h" axis, so the footer endpoints must read in hours too — not raw seconds.
+    text, err = call(tools.chart, {"metric": "sleep_seconds", "days": 14, "style": "combo"})
+    assert not err
+    footer = [ln for ln in text.split("\n") if "trend" in ln][0]
+    assert "→" in footer            # endpoint form, not a per-step number
+    assert "/step" not in footer    # no raw-unit slope
+    assert "h" in footer            # formatted in hours, matching the axis
+    # A unitless integer metric still gets clean integer endpoints (no "/step").
+    text2, err2 = call(tools.chart, {"metric": "rhr", "days": 14, "style": "combo"})
+    assert not err2
+    footer2 = [ln for ln in text2.split("\n") if "trend" in ln][0]
+    assert "→" in footer2
+    assert "/step" not in footer2
+    assert "bpm" not in footer2     # the dead unit param is gone
+
+
+def test_chart_unknown_metric(seeded):
+    payload, err = call(tools.chart, {"metric": "bogus", "days": 14})
+    assert err
+    assert "unknown metric" in payload["error"]
+
+
+def test_chart_unknown_style(seeded):
+    payload, err = call(tools.chart, {"metric": "rhr", "days": 14, "style": "pie"})
+    assert err
+    assert "unknown style" in payload["error"]
+
+
+def test_chart_no_data(seeded):
+    payload, err = call(tools.chart, {"metric": "vo2_max", "days": 14})
+    assert err  # vo2_max never seeded → no rows in window
+
+
+def test_chart_value_fmt_vo2_max_keeps_a_decimal():
+    # Minor: a realistic vo2_max window (47.9→48.4) must not collapse to "48".
+    fmt = tools._chart_value_fmt("vo2_max")
+    assert fmt(47.9) == "47.9"
+    assert fmt(48.4) == "48.4"
+    assert fmt(47.9) != fmt(48.4)  # distinct axis labels
+
+
+def test_chart_value_fmt_integer_metrics_stay_integer():
+    # Genuinely-integer metrics keep integer formatting (no spurious decimals).
+    assert tools._chart_value_fmt("steps")(8123.4) == "8123"
+    assert tools._chart_value_fmt("rhr")(52.6) == "53"
+
+
+def test_chart_excluded_from_brief_toolset(seeded):
+    # The brief renders its own UI cards; terminal ASCII has no place there.
+    # chart is callable (it's in ALL_TOOLS) but deliberately NOT in the brief's
+    # read-only allow-list — mirrors the daily_snapshot precedent.
+    read_only = tools.read_only_tool_names()
+    assert "mcp__fitness__chart" not in read_only
+    assert "mcp__fitness__chart" in tools.allowed_tool_names()
+
+
 def test_query_workouts_filters(seeded):
     payload, err = call(
         tools.query_workouts,

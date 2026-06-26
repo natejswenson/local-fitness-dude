@@ -4,6 +4,48 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-06-25
+
+### Added
+- **`chart` MCP tool — terminal graphs from your data.** A new read-only tool
+  (`mcp__fitness__chart`) renders any daily metric, the training-load series
+  (`ctl`/`atl`/`tsb` = fitness/fatigue/freshness), or the derived
+  `intensity_minutes_weighted` (Garmin "active minutes" = moderate + 2×vigorous)
+  as a terminal chart. Three styles: `bar` (emoji-color horizontal, default),
+  `combo` (2D vertical bars with a least-squares trend line overlaid — handles
+  negative series like TSB), and `spark` (one-line sparkline). A prototype
+  against the live terminal established that ANSI color is stripped on the way
+  to the display, so color is carried by emoji glyphs, not escape codes. The
+  renderers live in `agent/charts.py` as pure functions. The tool is available
+  to the chat/coach loop but deliberately excluded from the brief's tool set
+  (the brief renders its own UI cards), mirroring the `daily_snapshot`
+  precedent.
+
+### Changed
+- **Test coverage raised 65% → ~90%** with mock-free tests (real tmp SQLite +
+  hand-rolled fake Garmin clients + `ASGITransport`/`CliRunner`) for the
+  previously-thin I/O edges: `ingest/backfill.py` (8→100%), `ingest/daily.py`
+  (10→92%), `web/server.py` (55→92%), `web/mcp_server.py` (71→95%), `cli.py`
+  (39→81%), `ingest/auth.py` (25→86%), plus `agent/briefs.py`/`units.py`/
+  `status.py` to 100% and `briefing.py`'s pure partial-JSON parser. The SDK
+  message-stream and uvicorn/transport glue are left untested on purpose
+  (YAGNI — those tests would only assert mocks replay themselves). CI
+  `--cov-fail-under` raised 43 → 85 to lock in the gain.
+
+### Removed
+- **YAGNI cleanup for the public repo** (~400 LOC): the three one-off
+  `scripts/phase0_*.py` probes; dead code in `server.py` (`BRIEFINGS_DIR`,
+  a duplicate of `briefs._default_briefings_dir`), `tools.py`, `coach.py`,
+  `ingest/auth.py` (`clear_credentials`); an orphaned `StatCard.tsx` + unused
+  `deltaText` in the web app; and four unused single-knob `config.py` accessors.
+
+### Fixed
+- **Repo tidied for public consumption**: dropped the owner's LAN host
+  `fitness.home.local` from the shipped `_DEFAULT_ALLOWED_HOSTS` default
+  (now `127.0.0.1,localhost`; add your own via `LOCAL_FITNESS_MCP_ALLOWED_HOSTS`);
+  clone-agnostic `./data` volume examples in `docs/deployment.md`; a header
+  marking root `CLAUDE.md` as maintainer-internal.
+
 ## [0.12.1] - 2026-06-25
 
 ### Fixed

@@ -38,9 +38,10 @@ _BRIEF_LATEST_URI = "fitness://brief/latest"
 
 # Host allowlist for the streamable-HTTP transport's DNS-rebinding guard.
 # Empty allowlist + protection-on (the SDK default) returns 421 for every
-# request, so the served host MUST be present. Env-overridable for the
-# container deployment; the default works for a fresh clone on loopback.
-_DEFAULT_ALLOWED_HOSTS = "fitness.home.local,127.0.0.1,localhost"
+# request, so the served host MUST be present. The default works for a fresh
+# clone on loopback; add your own served host (e.g. an internal hostname behind
+# a reverse proxy) via the LOCAL_FITNESS_MCP_ALLOWED_HOSTS env var.
+_DEFAULT_ALLOWED_HOSTS = "127.0.0.1,localhost"
 
 
 def allowed_hosts() -> list[str]:

@@ -15,8 +15,8 @@ in the agent. Everything runs on your own machine; the only data that leaves is
 the handful of metrics the agent reads when you ask it something or it writes a
 brief.
 
-[![CI](https://github.com/natejswenson/local-fitness-dude/actions/workflows/ci.yml/badge.svg)](https://github.com/natejswenson/local-fitness-dude/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/natejswenson/local-fitness-dude)](https://github.com/natejswenson/local-fitness-dude/releases)
+[![CI](https://github.com/natejswenson/local-fitness/actions/workflows/ci.yml/badge.svg)](https://github.com/natejswenson/local-fitness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/natejswenson/local-fitness)](https://github.com/natejswenson/local-fitness/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 
@@ -105,8 +105,8 @@ signal yet.
 
 ```bash
 # 1. Clone and install deps + the `fitness` command
-git clone https://github.com/natejswenson/local-fitness-dude.git
-cd local-fitness-dude
+git clone https://github.com/natejswenson/local-fitness.git
+cd local-fitness
 uv sync
 
 # 2. (Optional) configuration overrides — defaults work out of the box
