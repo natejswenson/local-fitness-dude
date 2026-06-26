@@ -1,0 +1,49 @@
+name: reset-dev-after-promotion
+
+# After a `dev -> main` promotion squash-merges, `dev` is left with a diverged
+# history (same tree, ahead/behind by one). This resets `dev` back onto `main`
+# so the next promotion PR doesn't show phantom diffs. Runs on every push to
+# main; the underlying script is idempotent (no-op when dev already == main),
+# so an admin break-glass push to main is harmless.
+#
+# Requires a repo secret `DEV_RESET_PAT` — a PAT (classic: `repo`; or
+# fine-grained scoped to this repo with Administration:write + Contents:write).
+# The default GITHUB_TOKEN cannot edit branch protection or force-push a
+# protected branch, so without the secret this job skips cleanly.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reset-dev
+  cancel-in-progress: false
+
+jobs:
+  reset-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on admin token
+        id: gate
+        env:
+          DEV_RESET_PAT: ${{ secrets.DEV_RESET_PAT }}
+        run: |
+          if [ -z "${DEV_RESET_PAT:-}" ]; then
+            echo "::notice::DEV_RESET_PAT not configured — skipping dev reset. Add an admin-scoped PAT secret to enable."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Reset dev onto main
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_RESET_PAT }}
+        run: ops/reset-dev-to-main.sh "${{ github.repository }}"
