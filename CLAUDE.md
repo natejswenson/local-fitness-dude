@@ -1,5 +1,7 @@
 # local-fitness — instructions for Claude
 
+> Maintainer-internal: this file is agent/ops guidance for the repo owner, not contributor onboarding — see README.md to get started.
+
 This repo is a personal-fitness agent that has gone public on GitHub.
 Two facts shape every decision:
 

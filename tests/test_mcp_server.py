@@ -130,7 +130,8 @@ def test_tool_call_returns_unwrapped_content():
 
 def test_allowed_hosts_default_includes_served_host(monkeypatch):
     monkeypatch.delenv("LOCAL_FITNESS_MCP_ALLOWED_HOSTS", raising=False)
-    assert "fitness.home.local" in mcp_server.allowed_hosts()
+    assert "127.0.0.1" in mcp_server.allowed_hosts()
+    assert "localhost" in mcp_server.allowed_hosts()
     monkeypatch.setenv("LOCAL_FITNESS_MCP_ALLOWED_HOSTS", "a.local, b.local")
     assert mcp_server.allowed_hosts() == ["a.local", "b.local"]
 
