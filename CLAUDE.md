@@ -199,6 +199,14 @@ today", "how's my training load", "what did I run last week"):
   headers, never a sentence in a cell) plus short coach text. Per-item detail
   (a plan, a week schedule) → one compact `label: value · label: value` line per
   item, not a wide grid.
+- **Always render charts fully *in the reply*, never in a collapsed tool call.**
+  When you produce a chart/graph (the `chart` styles, or an ad-hoc render),
+  paste the full output into the message in a fenced code block so it shows
+  expanded by default — then add the coach read. It's fine to compute the chart
+  by running the renderer via Bash, but a chart left only in the Bash/tool-call
+  output is collapsed in the UI and forces the user to hit Ctrl-O to see it,
+  which Nate flagged as "very unfriendly." Reproduce the exact output in the
+  reply. Applies to every chart, every time.
 - This is advice, not an enforced gate — but with a tool that exists for the
   job, there's no reason to query the DB by hand.
 
