@@ -4,6 +4,17 @@ All notable changes to local-fitness are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Calendar chart alignment.** The heat-grid mixed cell widths — ASCII `· `
+  pads and an `M T W T F S S` header are narrower than the double-width emoji
+  squares, so columns didn't line up. Every grid cell is now a single emoji
+  (`⬛` for out-of-window days instead of dots), and the un-alignable ASCII
+  weekday header is dropped in favor of a `rows = weeks (Mon→Sun)` note in the
+  legend. Rows are now uniform 7-cell weeks that align cleanly. Regression test
+  asserts every grid row is exactly 7 emoji cells with no ASCII pad.
+
 ## [0.14.0] - 2026-06-26
 
 ### Added

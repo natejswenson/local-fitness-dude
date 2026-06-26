@@ -217,16 +217,23 @@ def render_calendar(
     lo, hi, span = _norm(values)
     start, end = min(by_date), max(by_date)
 
+    # Every grid cell is a single emoji (heat / ⬜ / ⬛) so columns line up — an
+    # emoji renders wider than an ASCII char in most terminals, so mixing the two
+    # (a "· " pad, or an "M T W…" weekday header) breaks alignment. We drop the
+    # ASCII weekday header entirely and spell the Mon→Sun convention in the legend.
     lines = [title] if title else []
-    lines.append(f"⬜ none   🟦 {value_fmt(lo)} (low) → 🟥 {value_fmt(hi)} (high)")
-    lines.append(f"{'':<8}M  T  W  T  F  S  S    wk")
+    agg_kind = "sum" if cumulative else "avg"
+    lines.append(
+        f"🟦 {value_fmt(lo)} (low) → 🟥 {value_fmt(hi)} (high)   "
+        f"⬜ no data · ⬛ outside · rows = weeks (Mon→Sun) · right = wk {agg_kind}"
+    )
     week_start = start - timedelta(days=start.weekday())  # Monday on/before start
     while week_start <= end:
         cells, present = [], []
         for i in range(7):
             d = week_start + timedelta(days=i)
             if d < start or d > end:
-                cells.append("· ")            # outside the window — alignment pad
+                cells.append("⬛")            # outside the window (emoji-width pad)
             elif d in by_date:
                 v = by_date[d]
                 cells.append(_heat((v - lo) / span))
