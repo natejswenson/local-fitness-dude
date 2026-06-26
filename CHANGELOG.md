@@ -21,6 +21,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the brief renders its own UI cards), mirroring the `daily_snapshot`
   precedent.
 
+### Changed
+- **Test coverage raised 65% → ~90%** with mock-free tests (real tmp SQLite +
+  hand-rolled fake Garmin clients + `ASGITransport`/`CliRunner`) for the
+  previously-thin I/O edges: `ingest/backfill.py` (8→100%), `ingest/daily.py`
+  (10→92%), `web/server.py` (55→92%), `web/mcp_server.py` (71→95%), `cli.py`
+  (39→81%), `ingest/auth.py` (25→86%), plus `agent/briefs.py`/`units.py`/
+  `status.py` to 100% and `briefing.py`'s pure partial-JSON parser. The SDK
+  message-stream and uvicorn/transport glue are left untested on purpose
+  (YAGNI — those tests would only assert mocks replay themselves). CI
+  `--cov-fail-under` raised 43 → 85 to lock in the gain.
+
+### Removed
+- **YAGNI cleanup for the public repo** (~400 LOC): the three one-off
+  `scripts/phase0_*.py` probes; dead code in `server.py` (`BRIEFINGS_DIR`,
+  a duplicate of `briefs._default_briefings_dir`), `tools.py`, `coach.py`,
+  `ingest/auth.py` (`clear_credentials`); an orphaned `StatCard.tsx` + unused
+  `deltaText` in the web app; and four unused single-knob `config.py` accessors.
+
+### Fixed
+- **Repo tidied for public consumption**: dropped the owner's LAN host
+  `fitness.home.local` from the shipped `_DEFAULT_ALLOWED_HOSTS` default
+  (now `127.0.0.1,localhost`; add your own via `LOCAL_FITNESS_MCP_ALLOWED_HOSTS`);
+  clone-agnostic `./data` volume examples in `docs/deployment.md`; a header
+  marking root `CLAUDE.md` as maintainer-internal.
+
 ## [0.12.0] - 2026-06-24
 
 ### Changed
