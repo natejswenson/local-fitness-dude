@@ -7,16 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **`chart` `line` style — a clean braille line chart.** Rendered in braille:
-  each character cell is a 2×4 dot matrix, so the curve is drawn at 8× the
-  resolution of plain characters and reads as a smooth line (the youplot /
-  plotille approach) instead of a stair-stepped box-drawing path. Consecutive
-  points are joined with a Bresenham run of dots so the line is continuous, with
-  a y-axis + baseline. Lightly smoothed (centered moving average) so it reads as
-  the trend, not daily jitter. Monochrome by design: a *colored* line would need
-  double-width emoji squares, which read as chunky blocks — `calendar` is the
-  style for color. (`agent/charts.py` `render_line`.) (Earlier emoji and
-  box-drawing line prototypes from this same `[Unreleased]` cycle were replaced.)
+- **`chart` `line` style — a clean box-drawing line chart.** Drawn with 1-cell
+  box-drawing glyphs (`─ ╭ ╮ ╰ ╯ │`) that connect into a smooth curve, with a
+  y-axis + baseline. Two things keep it clean rather than stair-stepped: the
+  series is **heavily smoothed** (centered moving average scaled to the window)
+  and **down-sampled to a lower column count**, so each change is a gentle slope
+  instead of a one-column riser. Box-drawing renders reliably everywhere (a
+  braille prototype was smoother in principle but font-dependent, so it was
+  dropped). Monochrome by design — a colored line needs chunky double-width
+  emoji; `calendar` is the style for color. (`agent/charts.py` `render_line`.)
+  (Earlier emoji / braille / under-smoothed line prototypes from this same
+  `[Unreleased]` cycle were replaced.)
 
 ### Fixed
 - **Calendar chart alignment.** The heat-grid mixed cell widths — ASCII `· `
