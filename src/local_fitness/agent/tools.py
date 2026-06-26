@@ -36,7 +36,6 @@ OBS_TYPES = frozenset({
 # vs value_text (via `text`). Text types are derived so the two can't drift.
 NUMERIC_OBS_TYPES = frozenset({"weight", "rpe", "soreness", "energy", "mood"})
 assert NUMERIC_OBS_TYPES <= OBS_TYPES
-TEXT_OBS_TYPES = OBS_TYPES - NUMERIC_OBS_TYPES
 
 # Source of truth for the queryable table/column list advertised by run_sql and
 # rendered by the fitness://schema MCP resource. Keep these in sync by rendering

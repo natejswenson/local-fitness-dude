@@ -48,19 +48,6 @@ def get_credentials() -> tuple[str, str] | None:
         return None
 
 
-def clear_credentials() -> None:
-    email = keyring.get_password(SERVICE, EMAIL_KEY)
-    if email:
-        try:
-            keyring.delete_password(SERVICE, email)
-        except keyring.errors.PasswordDeleteError:
-            pass
-        try:
-            keyring.delete_password(SERVICE, EMAIL_KEY)
-        except keyring.errors.PasswordDeleteError:
-            pass
-
-
 def prompt_and_store() -> tuple[str, str]:
     email = input("Garmin Connect email: ").strip()
     password = getpass.getpass("Garmin Connect password: ")
