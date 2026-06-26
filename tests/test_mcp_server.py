@@ -78,6 +78,28 @@ def test_coach_prompt_still_resolves():
     assert res.root.messages[0].content.text
 
 
+def test_coach_prompt_with_focus_argument():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.GetPromptRequest]
+    req = types.GetPromptRequest(
+        method="prompts/get",
+        params=types.GetPromptRequestParams(
+            name="coach", arguments={"focus": "recovery"}
+        ),
+    )
+    res = asyncio.run(handler(req))
+    text = res.root.messages[0].content.text
+    assert "Focus" in text
+    assert "recovery" in text
+
+
+def test_daily_step_goal_fallback_on_bad_setting():
+    p = _seed_db()
+    db.set_setting("daily_step_goal", "not-a-number", db_path=p)
+    assert mcp_server._daily_step_goal() == 10000
+
+
 def test_unknown_prompt_raises():
     import pytest
 
@@ -87,6 +109,99 @@ def test_unknown_prompt_raises():
     req = types.GetPromptRequest(
         method="prompts/get",
         params=types.GetPromptRequestParams(name="does_not_exist", arguments=None),
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(handler(req))
+
+
+# --- resources: schema + latest-brief advertised and readable -------------
+
+def test_list_resources_advertises_schema_and_brief():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ListResourcesRequest]
+    res = asyncio.run(handler(types.ListResourcesRequest(method="resources/list")))
+    uris = {str(r.uri) for r in res.root.resources}
+    assert {mcp_server._SCHEMA_URI, mcp_server._BRIEF_LATEST_URI} <= uris
+
+
+def test_read_schema_resource_renders_tables():
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ReadResourceRequest]
+    req = types.ReadResourceRequest(
+        method="resources/read",
+        params=types.ReadResourceRequestParams(uri=mcp_server._SCHEMA_URI),
+    )
+    res = asyncio.run(handler(req))
+    contents = res.root.contents[0]
+    assert "text/markdown" in (contents.mimeType or "")
+    assert "Fitness DB schema" in contents.text
+    assert "run_sql" in contents.text
+
+
+def test_read_brief_resource_empty_on_fresh_clone(monkeypatch, tmp_path):
+    # mcp_server binds its own DEFAULT_BRIEFINGS_DIR at import; point it at a
+    # non-existent dir to exercise the fresh-clone empty render.
+    _seed_db()
+    monkeypatch.setattr(mcp_server, "DEFAULT_BRIEFINGS_DIR", tmp_path / "nope")
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ReadResourceRequest]
+    req = types.ReadResourceRequest(
+        method="resources/read",
+        params=types.ReadResourceRequestParams(uri=mcp_server._BRIEF_LATEST_URI),
+    )
+    res = asyncio.run(handler(req))
+    assert "No brief generated yet" in res.root.contents[0].text
+
+
+def test_read_brief_resource_renders_persisted_brief(monkeypatch, tmp_path):
+    # Drop a real Brief JSON in the briefings dir → exercises the glob +
+    # most-recent pick (_latest_brief_markdown) and the _render_brief path.
+    _seed_db()
+    bdir = tmp_path / "briefings"
+    bdir.mkdir()
+    # The NEWEST file is invalid → exercises the `except (OSError, ValueError):
+    # continue` skip branch in _latest_brief_markdown; the loop then falls
+    # through to the older, valid file.
+    (bdir / "2026-06-20.json").write_text("{ not valid json", encoding="utf-8")
+    (bdir / "2026-06-01.json").write_text(
+        json.dumps({
+            "date": "2026-06-01",
+            "user_name": "Nate",
+            "generated_at": "2026-06-01T06:30:00",
+            "takeaways": [{
+                "headline": "Rest day earned",
+                "summary": "TSB positive, RHR steady.",
+                "tone": "positive",
+                "details": "Full deep-dive markdown here.",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_server, "DEFAULT_BRIEFINGS_DIR", bdir)
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ReadResourceRequest]
+    req = types.ReadResourceRequest(
+        method="resources/read",
+        params=types.ReadResourceRequestParams(uri=mcp_server._BRIEF_LATEST_URI),
+    )
+    res = asyncio.run(handler(req))
+    text = res.root.contents[0].text
+    assert "Morning brief — 2026-06-01" in text
+    assert "Rest day earned" in text
+    assert "Full deep-dive markdown here." in text
+
+
+def test_read_unknown_resource_raises():
+    import pytest
+
+    _seed_db()
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.ReadResourceRequest]
+    req = types.ReadResourceRequest(
+        method="resources/read",
+        params=types.ReadResourceRequestParams(uri="fitness://nope"),
     )
     with pytest.raises(ValueError):
         asyncio.run(handler(req))
@@ -130,7 +245,8 @@ def test_tool_call_returns_unwrapped_content():
 
 def test_allowed_hosts_default_includes_served_host(monkeypatch):
     monkeypatch.delenv("LOCAL_FITNESS_MCP_ALLOWED_HOSTS", raising=False)
-    assert "fitness.home.local" in mcp_server.allowed_hosts()
+    assert "127.0.0.1" in mcp_server.allowed_hosts()
+    assert "localhost" in mcp_server.allowed_hosts()
     monkeypatch.setenv("LOCAL_FITNESS_MCP_ALLOWED_HOSTS", "a.local, b.local")
     assert mcp_server.allowed_hosts() == ["a.local", "b.local"]
 

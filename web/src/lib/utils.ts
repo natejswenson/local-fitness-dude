@@ -64,21 +64,3 @@ export function fmtDayLocal(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
-
-export function deltaText(value: number | null, baseline: number | null, opts: { invertGood?: boolean } = {}): {
-  text: string
-  tone: 'good' | 'bad' | 'neutral'
-} {
-  if (value == null || baseline == null) return { text: '—', tone: 'neutral' }
-  const delta = value - baseline
-  const pct = Math.abs(delta / baseline) * 100
-  if (Math.abs(delta) < 1e-6) return { text: 'at baseline', tone: 'neutral' }
-  const sign = delta > 0 ? '+' : ''
-  const text = `${sign}${delta.toFixed(delta > 10 || delta < -10 ? 0 : 1)} (${pct.toFixed(0)}%)`
-  // For RHR, higher than baseline is BAD. For sleep, lower is BAD.
-  const isAbove = delta > 0
-  let tone: 'good' | 'bad' | 'neutral' = 'neutral'
-  if (opts.invertGood) tone = isAbove ? 'bad' : 'good'
-  else tone = isAbove ? 'good' : 'bad'
-  return { text, tone }
-}

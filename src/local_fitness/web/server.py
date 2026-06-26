@@ -64,14 +64,6 @@ _rate_lock = asyncio.Lock()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIST = _PROJECT_ROOT / "web" / "dist"
-# Honor the same env override as briefing.py — /briefings inside the
-# container, project-relative `./briefings/` otherwise.
-BRIEFINGS_DIR = Path(
-    os.environ.get(
-        "LOCAL_FITNESS_BRIEFINGS_DIR",
-        str(_PROJECT_ROOT / "briefings"),
-    )
-)
 
 # Auto-sync settings — bite-sized: never pull more than this many days at once,
 # and don't pull more than once per this many minutes from the UI trigger.

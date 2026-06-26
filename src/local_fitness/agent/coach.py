@@ -93,9 +93,6 @@ _FALLBACK_ADAPTIVE = CoachProfile(
     ),
 )
 
-_DIAL_KEYS = ("harshness", "warmth", "push")
-_THRESH_KEYS = ("roast_threshold", "praise_threshold")
-
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Split a ``---`` fenced frontmatter block from the body. Returns

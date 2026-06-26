@@ -51,8 +51,8 @@ services:
       # are always present; non-"miles" only suppresses the *_mi fields. Default miles.
       - LOCAL_FITNESS_DISPLAY_UNITS=${LOCAL_FITNESS_DISPLAY_UNITS:-miles}
     volumes:
-      - ${HOME}/localrepo/local-fitness/data:/data
-      - ${HOME}/localrepo/local-fitness/briefings:/briefings
+      - ./data:/data
+      - ./briefings:/briefings
       - ${HOME}/.garminconnect:/home/app/.garminconnect
       # Container's own writable .claude (the host's macOS keychain
       # auth isn't bind-mountable — run `docker exec -it fitness claude`
