@@ -247,6 +247,8 @@ def stream_env(tmp_path, monkeypatch):
     dbp = tmp_path / "fitness.db"
     monkeypatch.setattr(db, "DEFAULT_DB_PATH", dbp)
     db.init_schema(dbp)
+    # Isolate notes so neither prompt path reads the real user_notes.md.
+    monkeypatch.setenv("LOCAL_FITNESS_NOTES_PATH", str(tmp_path / "user_notes.md"))
     return out
 
 
@@ -523,23 +525,25 @@ def test_generate_save_true_writes(stream_env, monkeypatch):
 
 # --- Phase 3a: LOCAL_FITNESS_BRIEF_V2 flag + toolless routing ---------------
 
-def test_brief_v2_disabled_by_default(monkeypatch):
+def test_brief_v2_enabled_by_default(monkeypatch):
     monkeypatch.delenv("LOCAL_FITNESS_BRIEF_V2", raising=False)
-    assert briefing._brief_v2_enabled() is False
+    assert briefing._brief_v2_enabled() is True
 
 
 @pytest.mark.parametrize("val,on", [("1", True), ("true", True), ("on", True),
-                                    ("YES", True), ("0", False), ("off", False),
-                                    ("", False), ("maybe", False)])
+                                    ("YES", True), ("", True), ("maybe", True),
+                                    ("0", False), ("false", False), ("no", False),
+                                    ("off", False), ("OFF", False)])
 def test_brief_v2_flag_parsing(monkeypatch, val, on):
+    # Default-ON: only an explicit 0/false/no/off rolls back to V1.
     monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", val)
     assert briefing._brief_v2_enabled() is on
 
 
-def test_v1_default_routes_tools(stream_env, monkeypatch):
-    """Flag OFF (default) → the V1 monolith: MCP server attached, max_turns=20,
-    Step-1 tool orchestration in the prompt."""
-    monkeypatch.delenv("LOCAL_FITNESS_BRIEF_V2", raising=False)
+def test_v1_fallback_routes_tools(stream_env, monkeypatch):
+    """LOCAL_FITNESS_BRIEF_V2=0 → the V1 monolith fallback: MCP server attached,
+    max_turns=20, Step-1 tool orchestration in the prompt."""
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", "0")
     cap = _install_query_capture(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
     _drain(save=False)
     assert cap["options"].mcp_servers and cap["options"].max_turns == 20
@@ -596,9 +600,9 @@ def test_v2_logs_grounding_signal_without_altering_brief(stream_env, monkeypatch
 
 
 def test_v1_path_does_not_run_grounding(stream_env, monkeypatch, caplog):
-    """V1 has no BriefContext → no grounding log (nothing to ground against)."""
+    """V1 (fallback) has no BriefContext → no grounding log."""
     import logging
-    monkeypatch.delenv("LOCAL_FITNESS_BRIEF_V2", raising=False)
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", "0")
     _install_query(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
     with caplog.at_level(logging.INFO, logger="local_fitness.agent.briefing"):
         _drain(save=True)

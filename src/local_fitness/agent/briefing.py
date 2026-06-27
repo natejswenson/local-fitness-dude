@@ -76,16 +76,19 @@ def _brief_effort() -> str:
     return token if token in _VALID_EFFORTS else _DEFAULT_BRIEF_EFFORT
 
 
-# Flag for the agent/code-separation cutover. OFF by default → the live 06:30
-# brief keeps running the V1 monolith (MCP tools, max_turns=20). When ON, the
-# deterministic brief_planner assembles a BriefContext and a single TOOLLESS
-# generator writes the prose from it. Flip only after shadow-run parity holds.
+# Agent/code-separation composer. ON by default (cut over 2026-06-27 after
+# shadow-run parity held on all 6 fixtures): the deterministic brief_planner
+# assembles a BriefContext and a single TOOLLESS generator writes the prose from
+# it. The V1 monolith (MCP tools, max_turns=20) is retained as the instant
+# rollback — set LOCAL_FITNESS_BRIEF_V2=0 (or false/no/off) to fall back to it.
 _BRIEF_V2_ENV = "LOCAL_FITNESS_BRIEF_V2"
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 def _brief_v2_enabled() -> bool:
-    return os.environ.get(_BRIEF_V2_ENV, "").strip().lower() in _TRUTHY
+    """V2 unless explicitly disabled. Default (unset) → True; only an explicit
+    0/false/no/off rolls back to the V1 tool-driven monolith."""
+    return os.environ.get(_BRIEF_V2_ENV, "").strip().lower() not in _FALSY
 
 
 def _log_grounding(brief: Brief, context) -> None:
