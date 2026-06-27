@@ -389,11 +389,15 @@ async def generate_streaming(model: str = DEFAULT_MODEL, save: bool = True):
     yield {"type": "done", "brief": brief.model_dump()}
 
 
-async def _generate(model: str = DEFAULT_MODEL) -> Brief:
-    """Drain the streaming generator into a complete Brief. Used by the
-    non-streaming endpoint and the CLI brief command."""
+async def _generate(model: str = DEFAULT_MODEL, save: bool = False) -> Brief:
+    """Drain the streaming generator into a complete Brief.
+
+    Eval / read helper (the A/B harness is the only caller; ``/api/brief`` reads
+    the saved file, it does not generate). Defaults ``save=False`` so it can
+    NEVER overwrite the live ``briefings/<date>.json`` — the production save path
+    is ``generate_and_save`` (which uses ``generate_streaming(save=True)``)."""
     last_brief: dict | None = None
-    async for evt in generate_streaming(model=model):
+    async for evt in generate_streaming(model=model, save=save):
         if evt["type"] == "done":
             last_brief = evt["brief"]
         elif evt["type"] == "error":

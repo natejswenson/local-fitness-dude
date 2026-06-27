@@ -486,3 +486,21 @@ def date_today() -> str:
     from datetime import date
 
     return date.today().isoformat()
+
+
+# --- Phase 0: _generate is a save=False eval/read helper (never clobbers live) --
+
+def test_generate_save_false_does_not_write_live_brief(stream_env, monkeypatch):
+    # _generate is the A/B-harness/read helper; it must NEVER overwrite
+    # briefings/<date>.json (that's what made `ab_brief --run` dangerous).
+    _install_query(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
+    brief = asyncio.run(briefing._generate(model="m"))            # save defaults False
+    assert brief.takeaways[0].headline == _TAKEAWAY["headline"]   # returns the Brief
+    assert list(stream_env.glob("*.json")) == []                 # nothing written
+
+
+def test_generate_save_true_writes(stream_env, monkeypatch):
+    # the explicit save=True path still persists (the production save path uses it).
+    _install_query(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
+    asyncio.run(briefing._generate(model="m", save=True))
+    assert list(stream_env.glob("*.json"))
