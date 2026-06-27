@@ -298,6 +298,21 @@ def _install_query(monkeypatch, messages, raise_at_end: BaseException | None = N
     monkeypatch.setattr(briefing, "query", fake_query)
 
 
+def _install_query_capture(monkeypatch, messages) -> dict:
+    """Like _install_query but records the prompt + options the path passed —
+    so a test can assert V1-tools vs V2-toolless routing."""
+    captured: dict = {}
+
+    async def fake_query(prompt, options):
+        captured["prompt"] = prompt
+        captured["options"] = options
+        for m in messages:
+            yield m
+
+    monkeypatch.setattr(briefing, "query", fake_query)
+    return captured
+
+
 def _drain(save: bool = True) -> list[dict]:
     async def go():
         return [evt async for evt in briefing.generate_streaming(save=save)]
@@ -504,3 +519,60 @@ def test_generate_save_true_writes(stream_env, monkeypatch):
     _install_query(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
     asyncio.run(briefing._generate(model="m", save=True))
     assert list(stream_env.glob("*.json"))
+
+
+# --- Phase 3a: LOCAL_FITNESS_BRIEF_V2 flag + toolless routing ---------------
+
+def test_brief_v2_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("LOCAL_FITNESS_BRIEF_V2", raising=False)
+    assert briefing._brief_v2_enabled() is False
+
+
+@pytest.mark.parametrize("val,on", [("1", True), ("true", True), ("on", True),
+                                    ("YES", True), ("0", False), ("off", False),
+                                    ("", False), ("maybe", False)])
+def test_brief_v2_flag_parsing(monkeypatch, val, on):
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", val)
+    assert briefing._brief_v2_enabled() is on
+
+
+def test_v1_default_routes_tools(stream_env, monkeypatch):
+    """Flag OFF (default) → the V1 monolith: MCP server attached, max_turns=20,
+    Step-1 tool orchestration in the prompt."""
+    monkeypatch.delenv("LOCAL_FITNESS_BRIEF_V2", raising=False)
+    cap = _install_query_capture(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
+    _drain(save=False)
+    assert cap["options"].mcp_servers and cap["options"].max_turns == 20
+    assert "get_training_plan_status" in cap["prompt"]
+
+
+def test_v2_flag_routes_toolless_generator_and_saves(stream_env, monkeypatch):
+    """Flag ON → planner pre-pass + a single TOOLLESS generator: no MCP server,
+    max_turns=1, the prompt carries the pre-fetched BriefContext (no tool list).
+    The shared stream/parse/save core still validates + persists the brief."""
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", "1")
+    monkeypatch.setenv("LOCAL_FITNESS_NOTES_PATH", str(stream_env.parent / "notes.md"))
+    cap = _install_query_capture(monkeypatch, [_text_event(_brief_json([_takeaway()]))])
+    events = _drain(save=True)
+
+    done = [e for e in events if e["type"] == "done"]
+    assert len(done) == 1 and not [e for e in events if e["type"] == "error"]
+    # Toolless options — the invariant that makes grounding sound.
+    assert not cap["options"].mcp_servers
+    assert cap["options"].max_turns == 1
+    # Prompt is BriefContext-driven, not V1 tool-orchestration.
+    assert "cite ONLY these numbers" in cap["prompt"]
+    assert "get_training_plan_status" not in cap["prompt"]
+    # Saved through the same gate as V1.
+    assert (stream_env / f"{date_today()}.json").exists()
+
+
+def test_v2_path_streams_takeaways_and_validates(stream_env, monkeypatch):
+    """The V2 path reuses the streaming partial-parser + validation gate, so a
+    malformed stream still surfaces an error (no silent empty brief)."""
+    monkeypatch.setenv("LOCAL_FITNESS_BRIEF_V2", "1")
+    monkeypatch.setenv("LOCAL_FITNESS_NOTES_PATH", str(stream_env.parent / "notes.md"))
+    _install_query(monkeypatch, [_text_event("not json at all")])
+    events = _drain(save=True)
+    assert [e for e in events if e["type"] == "error"]
+    assert list(stream_env.glob("*.json")) == []
