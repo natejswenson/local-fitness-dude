@@ -62,6 +62,14 @@ def test_v2_user_prompt_continuity_section_is_conditional():
     assert "Recent briefs" in withc and "Easy 5k done" in withc
 
 
+def test_v2_user_prompt_hardens_thin_data():
+    up = prompts.brief_v2_user_prompt(_ctx(), "Nate", 10000, "", prompts.ADAPTIVE)
+    assert "When the data is thin" in up
+    assert "do NOT estimate" in up and "BY FEEL" in up
+    # Still keeps the 3-5 / mandate contract (don't drop below the count gate).
+    assert "Still produce the required workout + steps takeaways" in up
+
+
 def test_v2_user_prompt_steps_harsh_gate():
     from dataclasses import replace
     harsh = replace(prompts.ADAPTIVE, harshness=9)

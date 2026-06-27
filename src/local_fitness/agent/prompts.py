@@ -698,6 +698,15 @@ highest-priority fired candidate, and write each one in your voice. You MAY
 override `suggested_tone` when the holistic picture warrants. Use a candidate's
 `chart_metric` for that card's `metric` (or omit on a pure rest day).
 
+**When the data is thin** (a candidate has few or no `metrics`, or
+`training_load`/`snapshot` is sparse — e.g. a fresh device or a gap in syncing):
+do NOT estimate, round-trip, or invent a number to fill the gap. Say plainly that
+the data is limited and give the call BY FEEL ("not enough recent data to read
+your recovery — log a few days and I'll have a real read; today, easy 30 by
+feel"). An honest "not enough data yet" takeaway beats one propped up by a
+made-up number. Still produce the required workout + steps takeaways — just
+keep them number-light when the numbers aren't there.
+
 {_render_context_block(context)}
 
 # Output JSON only
