@@ -50,6 +50,15 @@ def test_aggregate_counts_valid_invalid_and_flakes():
     assert rec["consistency"]["consistent"] is False
 
 
+def test_aggregate_truncates_flake_to_reason_line():
+    # The composer's parse error embeds the full raw response after a blank
+    # line; only the first reason line is recorded.
+    verbose = "Could not parse brief JSON: bad delimiter\n\n{\"takeaways\": [{\"headline\": \"...prose...\"}]}"
+    rec = cb.aggregate_scenario([{"error": verbose}], plan_active=False)
+    assert rec["flakes"] == ["Could not parse brief JSON: bad delimiter"]
+    assert all("prose" not in f for f in rec["flakes"])
+
+
 def test_aggregate_all_errors_is_not_consistent():
     rec = cb.aggregate_scenario([{"error": "a"}, {"error": "b"}], plan_active=False)
     assert rec["schema_valid"] == 0

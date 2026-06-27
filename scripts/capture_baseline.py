@@ -79,7 +79,11 @@ def aggregate_scenario(results: list[dict], plan_active: bool) -> dict:
     schema_invalid = 0
     for item in results:
         if "error" in item:
-            flakes.append(item["error"])
+            # Record only the error REASON (first line, capped). The composer's
+            # parse error embeds the full raw model response after a blank line;
+            # that prose (even fabricated-fixture prose) doesn't belong in a
+            # committed structural baseline.
+            flakes.append(item["error"].split("\n", 1)[0].strip()[:200])
             continue
         if _schema_valid(item):
             schema_valid += 1
