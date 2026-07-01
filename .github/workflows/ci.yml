@@ -51,7 +51,7 @@ jobs:
       # Docker web-builder stage (node:26), with corepack installed explicitly
       # (node:26 dropped the bundled shim — this mirrors the Dockerfile exactly).
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 26
 
