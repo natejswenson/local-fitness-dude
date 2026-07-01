@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
@@ -37,13 +39,35 @@ def _no_mfa_callback() -> str:
     )
 
 
+def _tokenstore_path() -> str:
+    """Where the garminconnect session token is cached on disk.
+
+    Passing this to ``client.login()`` lets the library resume a cached
+    session instead of a full SSO login every pull — the fix for the login
+    429s. Defaults to ``~/.garminconnect/garmin_tokens.json``, which is the
+    host side of the container's ``${HOME}/.garminconnect`` bind-mount (see
+    docs/deployment.md), so the host's interactive first-login seeds the
+    container's session too. ``GARMINTOKENS`` overrides it (the container
+    sets it explicitly). The default works on a fresh clone with no env
+    setup; ``Path.home()`` resolves from ``HOME``, so the launchd job and the
+    interactive seeding shell must share the same ``HOME``.
+    """
+    override = os.environ.get("GARMINTOKENS")
+    if override:
+        return override
+    return str(Path.home() / ".garminconnect" / "garmin_tokens.json")
+
+
 def _client(mfa_callback: Callable[[], str] | None = None) -> Garmin:
     creds = auth.get_credentials()
     if not creds:
         raise RuntimeError("Garmin credentials not stored. Run `fitness setup` first.")
     email, password = creds
     client = Garmin(email, password, prompt_mfa=mfa_callback or _no_mfa_callback)
-    client.login()
+    # Resume from the cached token when present (no SSO call → no 429); the
+    # library only does a full credentialed login when it can't load one, then
+    # persists it back for next time.
+    client.login(_tokenstore_path())
     return client
 
 

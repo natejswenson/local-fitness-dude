@@ -36,7 +36,11 @@ services:
       - GARMIN_PASSWORD=${LOCAL_FITNESS_GARMIN_PASSWORD}
       # garminconnect token cache — point at the bind-mounted host
       # ~/.garminconnect dir so the host's first-MFA login seeds the
-      # container's session
+      # container's session. The host CLI now also resolves+writes this same
+      # file by default (daily._tokenstore_path → ~/.garminconnect/
+      # garmin_tokens.json), so host and container share one token and the
+      # seeding flow actually works; GARMINTOKENS here is the explicit
+      # container override of that default.
       - GARMINTOKENS=/home/app/.garminconnect/garmin_tokens.json
       # Long-lived Claude Code subscription token (so the Agent SDK
       # subprocess can authenticate without per-request API billing)
