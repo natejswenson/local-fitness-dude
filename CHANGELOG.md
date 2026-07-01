@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-07-01
+
+### Fixed
+- **Garmin pulls reuse a cached session token instead of a full login every
+  time.** `daily._client()` now passes an explicit tokenstore path to
+  `client.login()` (defaulting to `~/.garminconnect/garmin_tokens.json`, the host
+  side of the container's `${HOME}/.garminconnect` bind-mount; `GARMINTOKENS`
+  overrides it) so a pull resumes the saved session rather than doing a fresh SSO
+  login. Repeated logins were tripping Garmin's rate limit
+  (`Mobile login returned 429`), leaving the host's 06:30 launchd job re-logging
+  in every run; the host now gets token reuse by default (previously only the
+  container did, via its `GARMINTOKENS` env var), which also makes the documented
+  host-writes-token → container-reads-token seeding flow work for the first time.
+  The cached OAuth token eventually expires — re-seed with an interactive
+  `uv run fitness pull` when it lapses.
+
 ## [0.15.1] - 2026-06-27
 
 ### Changed

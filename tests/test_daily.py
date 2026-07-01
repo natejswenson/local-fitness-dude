@@ -11,8 +11,11 @@ stub (no mock library) that returns fabricated dicts, and exercise:
     success/partial/auth_failure/not_configured/skipped status state machine
     plus the ``ingest_runs`` lifecycle
 
-What we deliberately do NOT cover: ``_client()``'s real login, real network
-``client.get_*`` calls, and ``time.sleep`` throttling (patched to a no-op).
+What we deliberately do NOT cover: ``_client()``'s *real network* login and
+``client.get_*`` calls, and ``time.sleep`` throttling (patched to a no-op). We
+DO cover ``_tokenstore_path()`` resolution and that ``_client`` threads that
+path into ``client.login()`` (the session-token-reuse seam that stops the
+per-pull 429).
 """
 from __future__ import annotations
 
@@ -579,3 +582,63 @@ def test_pull_unknown_runtime_failure(seeded_db, monkeypatch):
 
     assert res["status"] == "failure"
     assert "some other runtime problem" in res["error"]
+
+
+# --------------------------------------------------------------------------- #
+# _tokenstore_path() + _client() session-token wiring
+# --------------------------------------------------------------------------- #
+class _LoginRecorder:
+    """Stand-in for ``garminconnect.Garmin`` that records the tokenstore arg
+    passed to ``login()`` — the seam these tests assert on. No mock library,
+    matching this module's hand-rolled convention."""
+
+    def __init__(self, *args, **kwargs):
+        self.login_calls: list = []
+
+    def login(self, tokenstore=None):
+        self.login_calls.append(tokenstore)
+        return None, None
+
+
+def test_tokenstore_path_default_when_unset(monkeypatch, tmp_path):
+    # Clearing the override is required for determinism — a shell- or CI-set
+    # GARMINTOKENS would otherwise win and make this assert the wrong path.
+    monkeypatch.delenv("GARMINTOKENS", raising=False)
+    monkeypatch.setattr(daily.Path, "home", lambda: tmp_path)
+
+    assert daily._tokenstore_path() == str(
+        tmp_path / ".garminconnect" / "garmin_tokens.json"
+    )
+
+
+def test_tokenstore_path_honors_env_override(monkeypatch):
+    monkeypatch.setenv("GARMINTOKENS", "/custom/loc/garmin_tokens.json")
+    assert daily._tokenstore_path() == "/custom/loc/garmin_tokens.json"
+
+
+def test_client_passes_default_tokenstore_to_login(monkeypatch, tmp_path):
+    monkeypatch.delenv("GARMINTOKENS", raising=False)
+    monkeypatch.setattr(daily.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(daily.auth, "get_credentials", lambda: ("e@x.com", "pw"))
+    rec = _LoginRecorder()
+    monkeypatch.setattr(daily, "Garmin", lambda *a, **k: rec)
+
+    client = daily._client()
+
+    # Fails if _client regresses to a no-arg login() (the original 429 bug).
+    expected = str(tmp_path / ".garminconnect" / "garmin_tokens.json")
+    assert rec.login_calls == [expected]
+    assert client is rec
+
+
+def test_client_passes_env_override_to_login(monkeypatch):
+    # A regression where _client ignored the override and hardcoded the default
+    # would pass the _tokenstore_path() unit tests but fail here.
+    monkeypatch.setenv("GARMINTOKENS", "/custom/loc/garmin_tokens.json")
+    monkeypatch.setattr(daily.auth, "get_credentials", lambda: ("e@x.com", "pw"))
+    rec = _LoginRecorder()
+    monkeypatch.setattr(daily, "Garmin", lambda *a, **k: rec)
+
+    daily._client()
+
+    assert rec.login_calls == ["/custom/loc/garmin_tokens.json"]
