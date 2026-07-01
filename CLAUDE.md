@@ -237,6 +237,37 @@ These are settled — don't redesign without a reason.
   V2** — the MCP `mcp__fitness__*` tools and the MCP `_brief_prompt` (chat /
   external-agent path) still use V1's tool-driven approach (a deliberate scope
   choice; `grounding.flag` is the reusable follow-up there).
+- **Daily brief job needs a Claude credential in `.env`.** The 06:30
+  launchd job (`com.localfitness.brief` → `fitness brief`) couples pull →
+  recompute-baselines → generate → save atomically. Its *generate* step
+  spawns a **headless** Claude via the Agent SDK, which authenticates from
+  the process env only — `cli.py` `load_dotenv()`s `<repo>/.env`, so the
+  token must live there as `CLAUDE_CODE_OAUTH_TOKEN` (Nate's Max token,
+  minted with `claude setup-token`, no per-brief cost, expires ~yearly) or
+  `ANTHROPIC_API_KEY` (never expires, bills per brief). A live Claude
+  session (like this chat) can compose + `save_brief` fine because it
+  already holds a token — but that's **not** the unattended path.
+  **Failure signature** when the token is missing/expired: pull succeeds
+  (`Pull: success` in `logs/brief.launchd.out.log`) but generation returns
+  empty (`chars=0 takeaways_yielded=0`, "no JSON found in agent response"
+  in `logs/brief.launchd.err.log`), so **no brief saves and the UI's "new
+  data available" banner sticks** (orphaned sync — pull ran, brief didn't).
+  Fix = put/refresh the token in `.env` (gitignored); re-mint on expiry.
+- **Garmin pulls reuse a cached session token** (since the 429 fix). `daily.py`
+  `_client()` passes `_tokenstore_path()` to `client.login()` instead of a
+  no-arg login, so a pull resumes the saved garminconnect session instead of a
+  full SSO login every time (repeated logins trip Garmin's rate limit →
+  `Mobile login returned 429`). The path defaults to
+  `~/.garminconnect/garmin_tokens.json` (the host side of the container's
+  `${HOME}/.garminconnect` bind-mount — host and container share one token, so
+  the host's interactive first login seeds the container); `GARMINTOKENS`
+  overrides it. **First run must be interactive** (`uv run fitness pull` once) so
+  the MFA prompt can seed the token; after that the launchd job resumes from it.
+  The cached OAuth token eventually expires (no fixed TTL) — when it lapses the
+  non-interactive 06:30 job may hit a login/MFA and fail; the remedy is to
+  re-seed with an interactive `uv run fitness pull`. `~/.garminconnect` is
+  outside the repo; `Path.home()` resolves from `HOME`, so the launchd job and
+  the seeding shell must share the same `HOME`.
 - **Path defaults**: `db.py`, `notes.py`, `briefing.py`, `web/server.py`
   all resolve to `_PROJECT_ROOT / ...` when env vars are unset.
 - **Auth middleware**: `LOCAL_FITNESS_API_TOKEN` env var; constant-time
